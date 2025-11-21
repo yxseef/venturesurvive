@@ -1,12 +1,12 @@
 # Data Overview
 
-- **Fichier source**: `data/startups_raw.csv`
-- **Nombre de lignes**: 66368
-- **Nombre de colonnes**: 14
+- **Source file**: `data/startups_raw.csv`
+- **Number of rows**: 66368
+- **Number of columns**: 14
 
-## Schéma du dataset
+## Dataset schema
 
-| Colonne | Type inféré | Non-nuls | Nuls | % manquants | Exemples |
+| Column | Inferred type | Non-null | Null | % missing | Examples |
 |--------|-------------|----------|------|------------|----------|
 | permalink | string | 66368 | 0 | 0.00% | /organization/-fame, /organization/-qounter, /organization/-the-one-of-them-inc-, /organization/0-6-com, /organization/004-technologies |
 | name | string | 66367 | 1 | 0.00% | #fame, :Qounter, (THE) ONE of THEM,Inc., 0-6.com, 004 Technologies |
@@ -23,33 +23,33 @@
 | first_funding_at | date | 66344 | 24 | 0.04% | 2015-01-05, 2014-03-01, 2014-01-30, 2008-03-19, 2014-07-24 |
 | last_funding_at | date | 66368 | 0 | 0.00% | 2015-01-05, 2014-10-14, 2014-01-30, 2008-03-19, 2014-07-24 |
 
-## Valeurs manquantes par colonne
+## Missing values per column
 
-- **permalink**: 0 manquantes (0.00%)
-- **name**: 1 manquantes (0.00%)
-- **homepage_url**: 5058 manquantes (7.62%)
-- **category_list**: 3148 manquantes (4.74%)
-- **funding_total_usd**: 0 manquantes (0.00%)
-- **status**: 0 manquantes (0.00%)
-- **country_code**: 6958 manquantes (10.48%)
-- **state_code**: 8547 manquantes (12.88%)
-- **region**: 8030 manquantes (12.10%)
-- **city**: 8028 manquantes (12.10%)
-- **funding_rounds**: 0 manquantes (0.00%)
-- **founded_at**: 15221 manquantes (22.93%)
-- **first_funding_at**: 24 manquantes (0.04%)
-- **last_funding_at**: 0 manquantes (0.00%)
+- **permalink**: 0 missing (0.00%)
+- **name**: 1 missing (0.00%)
+- **homepage_url**: 5058 missing (7.62%)
+- **category_list**: 3148 missing (4.74%)
+- **funding_total_usd**: 0 missing (0.00%)
+- **status**: 0 missing (0.00%)
+- **country_code**: 6958 missing (10.48%)
+- **state_code**: 8547 missing (12.88%)
+- **region**: 8030 missing (12.10%)
+- **city**: 8028 missing (12.10%)
+- **funding_rounds**: 0 missing (0.00%)
+- **founded_at**: 15221 missing (22.93%)
+- **first_funding_at**: 24 missing (0.04%)
+- **last_funding_at**: 0 missing (0.00%)
 
-## Répartition du statut (succès / échec)
+## Status distribution (success / failure)
 
-| Statut | Nombre | % |
+| Status | Count | % |
 |--------|--------|---|
 | operating | 53034 | 79.91% |
 | closed | 6238 | 9.40% |
 | acquired | 5549 | 8.36% |
 | ipo | 1547 | 2.33% |
 
-## Avertissements et points d’attention
+## Warnings and points of attention
 
-- **Doublons**: pas de doublons évidents détectés sur les colonnes identifiants utilisées.
-- **Colonnes de dates à vérifier**: founded_at, first_funding_at, last_funding_at
+- **Duplicates**: no obvious duplicates detected based on the identifier columns used.
+- **Date columns to double-check**: founded_at, first_funding_at, last_funding_at
