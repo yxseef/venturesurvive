@@ -8,7 +8,9 @@ from typing import Iterable, Optional
 import pandas as pd
 
 
-DATA_PATH_DEFAULT = Path("data/startups_raw.csv")
+# Project root is the parent of the src/ directory where this file lives
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DATA_PATH_DEFAULT = PROJECT_ROOT / "data" / "startups_raw.csv"
 
 
 def load_raw(path: Optional[str | Path] = None) -> pd.DataFrame:
