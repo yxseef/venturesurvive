@@ -100,7 +100,6 @@ def make_category_features(df: pd.DataFrame) -> pd.DataFrame:
         out["category_main"] = np.nan
     return out
 
-
 def assemble_features(df: pd.DataFrame) -> pd.DataFrame:
     """Assemble a feature-ready DataFrame from a cleaned input DataFrame.
 
@@ -114,21 +113,84 @@ def assemble_features(df: pd.DataFrame) -> pd.DataFrame:
     """
     out = df.copy()
 
-    # Time-based features
+    # ============================================================
+    # 1. Time-based features
+    # ============================================================
     out = make_time_features(out)
 
-    # Geographic features
+    # ============================================================
+    # 2. Geographic features
+    # ============================================================
     out = make_geo_features(out)
 
-    # Category-based features
+    # ============================================================
+    # 3. Category-based features
+    # ============================================================
     out = make_category_features(out)
 
-    # Numeric log funding as a feature
+    # ============================================================
+    # 4. Numeric log funding
+    # ============================================================
     if "funding_total_usd" in out.columns:
         funding = pd.to_numeric(out["funding_total_usd"], errors="coerce")
         out["log_funding_total"] = np.log1p(funding)
 
-    # Drop columns that are unlikely to help directly in models
+    # ============================================================
+    # 5. OPTION B : Nouveau Feature Engineering (très académique)
+    # ============================================================
+
+    # 5.1 Funding per round
+    if {"funding_total_usd", "funding_rounds"}.issubset(out.columns):
+        rounds_safe = out["funding_rounds"].replace(0, np.nan)
+        out["funding_per_round"] = out["funding_total_usd"] / rounds_safe
+        out["log_funding_per_round"] = np.log1p(out["funding_per_round"])
+
+        # Thresholds (75th percentile)
+        total_thr = out["funding_total_usd"].quantile(0.75)
+        out["high_total_funding"] = (out["funding_total_usd"] >= total_thr).astype(int)
+
+        round_thr = out["funding_per_round"].quantile(0.75)
+        out["high_funding_per_round"] = (
+            out["funding_per_round"] >= round_thr
+        ).astype(int)
+
+        out["has_multiple_rounds"] = (out["funding_rounds"] >= 2).astype(int)
+
+    # 5.2 Time until first funding
+    if {"founded_at", "first_funding_at"}.issubset(out.columns):
+        mask = out["founded_at"].notna() & out["first_funding_at"].notna()
+        out["time_to_first_funding_years"] = np.where(
+            mask,
+            (out["first_funding_at"] - out["founded_at"]).dt.days / 365.25,
+            np.nan,
+        )
+
+    # 5.3 Company age at last funding
+    if {"founded_at", "last_funding_at"}.issubset(out.columns):
+        mask = out["founded_at"].notna() & out["last_funding_at"].notna()
+        out["company_age_at_last_funding_years"] = np.where(
+            mask,
+            (out["last_funding_at"] - out["founded_at"]).dt.days / 365.25,
+            np.nan,
+        )
+
+    # 5.4 Average interval between funding rounds
+    if {"first_funding_at", "last_funding_at", "funding_rounds"}.issubset(out.columns):
+        denom = np.where(out["funding_rounds"] >= 2, out["funding_rounds"] - 1, np.nan)
+        mask = (
+            out["first_funding_at"].notna()
+            & out["last_funding_at"].notna()
+            & (out["funding_rounds"] >= 2)
+        )
+        out["avg_round_interval_years"] = np.where(
+            mask,
+            (out["last_funding_at"] - out["first_funding_at"]).dt.days / 365.25 / denom,
+            np.nan,
+        )
+
+    # ============================================================
+    # 6. Drop non-informative columns
+    # ============================================================
     drop_cols = [
         "permalink",
         "name",
