@@ -113,31 +113,21 @@ def assemble_features(df: pd.DataFrame) -> pd.DataFrame:
     """
     out = df.copy()
 
-    # ============================================================
     # 1. Time-based features
-    # ============================================================
     out = make_time_features(out)
 
-    # ============================================================
     # 2. Geographic features
-    # ============================================================
     out = make_geo_features(out)
 
-    # ============================================================
     # 3. Category-based features
-    # ============================================================
     out = make_category_features(out)
 
-    # ============================================================
     # 4. Numeric log funding
-    # ============================================================
     if "funding_total_usd" in out.columns:
         funding = pd.to_numeric(out["funding_total_usd"], errors="coerce")
         out["log_funding_total"] = np.log1p(funding)
 
-    # ============================================================
     # 5. OPTION B : Nouveau Feature Engineering (très académique)
-    # ============================================================
 
     # 5.1 Funding per round
     if {"funding_total_usd", "funding_rounds"}.issubset(out.columns):
@@ -188,9 +178,7 @@ def assemble_features(df: pd.DataFrame) -> pd.DataFrame:
             np.nan,
         )
 
-    # ============================================================
     # 6. Drop non-informative columns
-    # ============================================================
     drop_cols = [
         "permalink",
         "name",
