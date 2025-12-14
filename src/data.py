@@ -1,95 +1,158 @@
-"""Data loading and basic preprocessing utilities for the venturesurvive project."""
+"""Data loading and target engineering for the venturesurvive project."""
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Optional
 
+import numpy as np
 import pandas as pd
 
-
-# Project root is the parent of the src/ directory where this file lives
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DATA_PATH_DEFAULT = PROJECT_ROOT / "data" / "startups_raw.csv"
+from .config import RAW_DATA_PATH, PROCESSED_DATA_PATH
 
 
-def load_raw(path: Optional[str | Path] = None) -> pd.DataFrame:
+# ---------------------------------------------------------------------
+# Data loading
+# ---------------------------------------------------------------------
+
+def load_raw_data(path: Optional[Path] = None) -> pd.DataFrame:
     """Load the raw startups dataset from CSV.
 
     Parameters
     ----------
-    path: optional custom path to the CSV. Defaults to DATA_PATH_DEFAULT.
+    path : optional Path
+        Path to the raw CSV file. Defaults to RAW_DATA_PATH from config.
+
+    Returns
+    -------
+    pd.DataFrame
+        Raw startup dataset.
     """
-    csv_path = Path(path) if path is not None else DATA_PATH_DEFAULT
+    csv_path = path if path is not None else RAW_DATA_PATH
     if not csv_path.exists():
-        raise FileNotFoundError(f"Raw data file not found at {csv_path!s}")
-    df = pd.read_csv(csv_path)
-    return df
+        raise FileNotFoundError(f"Raw data file not found at {csv_path}")
+    return pd.read_csv(csv_path)
 
 
-def filter_status(df: pd.DataFrame, statuses: Optional[Iterable[str]] = None) -> pd.DataFrame:
-    """Filter rows to keep only selected status values.
+def load_cleaned_data(path: Optional[Path] = None) -> pd.DataFrame:
+    """Load the cleaned/preprocessed startups dataset from CSV.
 
-    Default is {"acquired", "ipo", "closed"}.
+    Parameters
+    ----------
+    path : optional Path
+        Path to the cleaned CSV file. Defaults to PROCESSED_DATA_PATH.
+
+    Returns
+    -------
+    pd.DataFrame
+        Cleaned startup dataset.
     """
-    if "status" not in df.columns:
-        raise KeyError("Column 'status' not found in DataFrame")
+    csv_path = path if path is not None else PROCESSED_DATA_PATH
+    if not csv_path.exists():
+        raise FileNotFoundError(
+            f"Cleaned data file not found at {csv_path}. "
+            "Run the preprocessing step first."
+        )
+    return pd.read_csv(csv_path)
 
-    keep = set(statuses) if statuses is not None else {"acquired", "ipo", "closed"}
-    mask = df["status"].isin(keep)
-    return df.loc[mask].copy()
 
-
-def create_label(
-    df: pd.DataFrame,
-    positive: Optional[Iterable[str]] = None,
-    negative: Optional[Iterable[str]] = None,
-    label_col: str = "success",
-) -> pd.DataFrame:
-    """Create a binary label column from status.
-
-    By default:
-    - positive: {"acquired", "ipo"}
-    - negative: {"closed"}
-    """
-    if "status" not in df.columns:
-        raise KeyError("Column 'status' not found in DataFrame")
-
-    positive = set(positive) if positive is not None else {"acquired", "ipo"}
-    negative = set(negative) if negative is not None else {"closed"}
-
-    mapping = {s: 1 for s in positive}
-    mapping.update({s: 0 for s in negative})
-
-    out = df.copy()
-    out[label_col] = out["status"].map(mapping)
-    if out[label_col].isna().any():
-        # We deliberately keep rows with NaN label so caller can decide what to do.
-        pass
-    return out
-
+# ---------------------------------------------------------------------
+# Date handling
+# ---------------------------------------------------------------------
 
 def convert_dates(df: pd.DataFrame) -> pd.DataFrame:
-    """Convert known date columns to pandas datetime (in-place copy)."""
+    """Convert known date columns to pandas datetime.
+
+    This function is the single source of truth for date conversion
+    in the project.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+
+    Returns
+    -------
+    pd.DataFrame
+        Copy of df with converted date columns.
+    """
     date_cols = ["founded_at", "first_funding_at", "last_funding_at"]
     out = df.copy()
+
     for col in date_cols:
         if col in out.columns:
             out[col] = pd.to_datetime(out[col], errors="coerce")
+
     return out
 
 
-def clean_funding(df: pd.DataFrame, column: str = "funding_total_usd") -> pd.DataFrame:
-    """Clean the total funding column.
+# ---------------------------------------------------------------------
+# Target engineering
+# ---------------------------------------------------------------------
 
-    - Convert to numeric (non-parsable values become NaN).
-    - Replace negative values by NaN (defensive).
+def compute_success_target(df: pd.DataFrame) -> pd.DataFrame:
+    """Compute survival-based target variables.
+
+    Adds the following columns:
+    - years_alive   : proxy for company lifespan (in years)
+    - survived_5y   : boolean indicator (years_alive >= 5)
+    - success       : binary target variable
+
+    Definition of success:
+    success = 1 if (years_alive >= 5) OR (status in {"acquired", "ipo"})
+    success = 0 otherwise
+
+    IMPORTANT
+    ---------
+    The column `status` is used ONLY to define the target variable.
+    It must NEVER be used as a feature in downstream modeling to avoid
+    information leakage.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Input dataset containing at least date columns and `status`.
+
+    Returns
+    -------
+    pd.DataFrame
+        Copy of df with target-related columns added.
     """
-    out = df.copy()
-    if column not in out.columns:
-        return out
+    out = convert_dates(df)
 
-    funding = pd.to_numeric(out[column], errors="coerce")
-    funding = funding.where(funding >= 0)
-    out[column] = funding
+    # Initialize columns
+    out["years_alive"] = np.nan
+    out["survived_5y"] = np.nan
+    out["success"] = np.nan
+
+    required_dates = {"founded_at", "first_funding_at", "last_funding_at"}
+    if required_dates.issubset(out.columns):
+        # Use last observed funding date as proxy for end of observation
+        end_date = out["last_funding_at"].fillna(out["first_funding_at"])
+
+        mask_valid = out["founded_at"].notna() & end_date.notna()
+        out.loc[mask_valid, "years_alive"] = (
+            (end_date[mask_valid] - out.loc[mask_valid, "founded_at"])
+            .dt.days
+            / 365.25
+        )
+
+        out.loc[mask_valid, "survived_5y"] = out.loc[mask_valid, "years_alive"] >= 5
+
+    if "status" in out.columns:
+        exit_mask = out["status"].isin(["acquired", "ipo"])
+        long_lived_mask = out["years_alive"].ge(5)
+        out["success"] = (exit_mask | long_lived_mask.fillna(False)).astype(int)
+
     return out
+
+
+# ---------------------------------------------------------------------
+# Public exports
+# ---------------------------------------------------------------------
+
+__all__ = [
+    "load_raw_data",
+    "load_cleaned_data",
+    "convert_dates",
+    "compute_success_target",
+]
