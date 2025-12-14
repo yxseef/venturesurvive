@@ -16,6 +16,11 @@ def make_time_features(df: pd.DataFrame) -> pd.DataFrame:
     """Create basic time-based features (in days)."""
     out = df.copy()
 
+    # Ensure datetime columns (critical fix)
+    for col in ["founded_at", "first_funding_at", "last_funding_at"]:
+        if col in out.columns:
+            out[col] = pd.to_datetime(out[col], errors="coerce", utc=True)
+
     if {"founded_at", "first_funding_at"}.issubset(out.columns):
         out["age_at_first_funding_days"] = (
             out["first_funding_at"] - out["founded_at"]
