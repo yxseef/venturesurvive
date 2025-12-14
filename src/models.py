@@ -36,8 +36,7 @@ def build_preprocessor(
     categorical_transformer = Pipeline(
         steps=[
             ("imputer", SimpleImputer(strategy="most_frequent")),
-            # use sparse=True for broad sklearn compatibility
-            ("onehot", OneHotEncoder(handle_unknown="ignore", sparse=True)),
+            ("onehot", OneHotEncoder(handle_unknown="ignore", sparse_output=True)),
         ]
     )
 
