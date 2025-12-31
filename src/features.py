@@ -1,17 +1,4 @@
-"""Feature engineering utilities for the venturesurvive project.
-
-Snapshot definition
--------------------
-We define the prediction time as a snapshot taken SNAPSHOT_MONTHS after a startup's
-foundation date (founded_at). Features must be derivable from information available
-up to founded_at + SNAPSHOT_MONTHS.
-
-Because the dataset is Crunchbase-like and often contains lifetime aggregates
-(e.g., total funding, total rounds), we apply conservative censoring rules:
-- We NEVER use last_funding_at or any feature directly derived from it.
-- Lifetime totals are only used when we can be confident they are fully observed
-  within the snapshot window (e.g., last_funding_at <= snapshot_date).
-"""
+"""Feature engineering utilities for the venturesurvive project (STRICT 6-MONTH SNAPSHOT)."""
 
 from __future__ import annotations
 
@@ -20,141 +7,76 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
-from .config import SNAPSHOT_MONTHS
+
+SNAPSHOT_MONTHS = 6
 
 
 # ---------------------------------------------------------------------
-# Helpers
+# Snapshot + time features (STRICT)
 # ---------------------------------------------------------------------
 
-def _to_datetime_no_tz(s: pd.Series) -> pd.Series:
-    """Parse datetimes and strip timezone to keep comparisons robust."""
-    out = pd.to_datetime(s, errors="coerce")
-    # strip tz if present
-    try:
-        if getattr(out.dt, "tz", None) is not None:
-            out = out.dt.tz_localize(None)
-    except Exception:
-        pass
-    return out
+def make_snapshot_features(df: pd.DataFrame, snapshot_months: int = SNAPSHOT_MONTHS) -> pd.DataFrame:
+    """Create STRICT snapshot-safe features (t <= founded_at + snapshot_months).
 
-
-def _extract_first_category(value: Optional[str]) -> Optional[str]:
-    if not isinstance(value, str) or not value:
-        return None
-    return value.split("|")[0].strip() or None
-
-
-# ---------------------------------------------------------------------
-# Snapshot (6-month) features
-# ---------------------------------------------------------------------
-
-def make_snapshot_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Create features restricted to the first SNAPSHOT_MONTHS months of life."""
+    Key idea:
+    - We may use event timestamps to derive *whether an event happened by snapshot*.
+      (e.g., "funded within 6 months"), which is equivalent to knowledge available at snapshot time.
+    - We must NOT use any information that depends on future outcomes beyond snapshot
+      (e.g., last_funding_at, lifetime funding totals/rounds).
+    """
     out = df.copy()
 
-    # Ensure datetime columns exist and are tz-naive
-    if "founded_at" in out.columns:
-        out["founded_at"] = _to_datetime_no_tz(out["founded_at"])
-    if "first_funding_at" in out.columns:
-        out["first_funding_at"] = _to_datetime_no_tz(out["first_funding_at"])
-    if "last_funding_at" in out.columns:
-        out["last_funding_at"] = _to_datetime_no_tz(out["last_funding_at"])
+    # Ensure datetime columns (tz-naive)
+    for col in ["founded_at", "first_funding_at"]:
+        if col in out.columns:
+            out[col] = pd.to_datetime(out[col], errors="coerce")
+            if getattr(out[col].dt, "tz", None) is not None:
+                out[col] = out[col].dt.tz_localize(None)
 
-    # Snapshot date: founded_at + SNAPSHOT_MONTHS
-    if "founded_at" in out.columns:
-        out["snapshot_date"] = out["founded_at"] + pd.DateOffset(months=SNAPSHOT_MONTHS)
-    else:
-        out["snapshot_date"] = pd.NaT
+    # Snapshot date = founded_at + 6 months (calendar months)
+    out["snapshot_date"] = pd.NaT
+    mask_founded = out["founded_at"].notna()
+    out.loc[mask_founded, "snapshot_date"] = out.loc[mask_founded, "founded_at"] + pd.DateOffset(months=snapshot_months)
 
-    # Max plausible snapshot duration in days (approx) for clipping
-    max_snapshot_days = int(round(SNAPSHOT_MONTHS * 30.4375))  # ~183 for 6 months
-
-    # Funding timing within snapshot
-    if {"founded_at", "first_funding_at"}.issubset(out.columns):
-        has_first_funding_by_snap = (
-            out["founded_at"].notna()
-            & out["first_funding_at"].notna()
-            & out["snapshot_date"].notna()
-            & (out["first_funding_at"] <= out["snapshot_date"])
-        )
-
-        out["has_first_funding_6m"] = has_first_funding_by_snap.astype(int)
-
-        out["age_at_first_funding_days_6m"] = np.where(
-            has_first_funding_by_snap,
-            (out["first_funding_at"] - out["founded_at"]).dt.days,
-            np.nan,
-        )
-
-        # clip to [0, max_snapshot_days] to reduce outliers / date noise
-        out["age_at_first_funding_days_6m"] = pd.to_numeric(
-            out["age_at_first_funding_days_6m"], errors="coerce"
-        ).clip(lower=0, upper=max_snapshot_days)
-
-    else:
-        out["has_first_funding_6m"] = 0
-        out["age_at_first_funding_days_6m"] = np.nan
-
-    # Cohort features from founded_at (allowed at t=0)
-    if "founded_at" in out.columns:
-        out["founded_year"] = out["founded_at"].dt.year
-        out["founded_month"] = out["founded_at"].dt.month
-        out["founded_quarter"] = out["founded_at"].dt.quarter
-        out["founded_year_missing"] = out["founded_at"].isna().astype(int)
-    else:
-        out["founded_year"] = np.nan
-        out["founded_month"] = np.nan
-        out["founded_quarter"] = np.nan
-        out["founded_year_missing"] = 1
-
-    # Conservative funding aggregates: only usable if fully observed within snapshot
-    # (i.e., last_funding_at <= snapshot_date). Otherwise we set to NaN to avoid leakage.
-    if "funding_total_usd" in out.columns:
-        out["funding_total_usd_num"] = pd.to_numeric(out["funding_total_usd"], errors="coerce")
-    else:
-        out["funding_total_usd_num"] = np.nan
-
-    if "funding_rounds" in out.columns:
-        out["funding_rounds_num"] = pd.to_numeric(out["funding_rounds"], errors="coerce")
-    else:
-        out["funding_rounds_num"] = np.nan
-
-    fully_observed_by_snap = (
-        out.get("last_funding_at", pd.Series([pd.NaT] * len(out))).notna()
-        & out["snapshot_date"].notna()
-        & (out.get("last_funding_at") <= out["snapshot_date"])
-    )
-
-    out["funding_fully_observed_6m"] = fully_observed_by_snap.astype(int)
-
-    out["funding_total_usd_6m"] = np.where(
-        fully_observed_by_snap,
-        out["funding_total_usd_num"],
-        np.nan,
-    )
-    out["log_funding_total_6m"] = np.log1p(out["funding_total_usd_6m"])
-
-    out["funding_rounds_6m"] = np.where(
-        fully_observed_by_snap,
-        out["funding_rounds_num"],
+    # Horizon in days (varies slightly with calendar months)
+    out["snapshot_horizon_days"] = np.where(
+        out["snapshot_date"].notna() & out["founded_at"].notna(),
+        (out["snapshot_date"] - out["founded_at"]).dt.days,
         np.nan,
     )
 
-    # Funding per round (only when both are known within snapshot)
-    rounds_safe = pd.Series(out["funding_rounds_6m"]).replace(0, np.nan)
-    out["funding_per_round_6m"] = out["funding_total_usd_6m"] / rounds_safe
-    out["log_funding_per_round_6m"] = np.log1p(out["funding_per_round_6m"])
+    # Funding within snapshot (STRICT)
+    has_first = out["first_funding_at"].notna() & out["snapshot_date"].notna()
+    funded_within = has_first & (out["first_funding_at"] <= out["snapshot_date"])
+    out["funded_within_6m"] = funded_within.astype(int)
+    out["first_funding_missing"] = out["first_funding_at"].isna().astype(int)
+
+    # Age at first funding (censored at snapshot)
+    # - If funded within snapshot: use true delay
+    # - Else: set to horizon_days (we know "no funding by snapshot", so delay >= horizon; we encode as horizon)
+    out["age_at_first_funding_days"] = np.nan
+    mask_ok = out["founded_at"].notna() & out["snapshot_date"].notna()
+
+    # funded within snapshot => exact
+    out.loc[mask_ok & funded_within, "age_at_first_funding_days"] = (
+        (out.loc[mask_ok & funded_within, "first_funding_at"] - out.loc[mask_ok & funded_within, "founded_at"]).dt.days
+    )
+
+    # not funded within snapshot => censored to horizon
+    out.loc[mask_ok & (~funded_within), "age_at_first_funding_days"] = out.loc[mask_ok & (~funded_within), "snapshot_horizon_days"]
+
+    # Basic sanity clipping
+    out["age_at_first_funding_days"] = out["age_at_first_funding_days"].clip(lower=0)
 
     return out
 
 
 # ---------------------------------------------------------------------
-# Geographic features
+# Geographic features (safe at t=0)
 # ---------------------------------------------------------------------
 
 def make_geo_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Create simple geographic indicator features (available at t=0)."""
+    """Create simple geographic indicator features (t=0 safe)."""
     out = df.copy()
 
     country = out.get("country_code")
@@ -182,11 +104,17 @@ def make_geo_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------
-# Category features
+# Category features (safe at t=0)
 # ---------------------------------------------------------------------
 
+def _extract_first_category(value: Optional[str]) -> Optional[str]:
+    if not isinstance(value, str) or not value:
+        return None
+    return value.split("|")[0].strip() or None
+
+
 def make_category_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Extract a main category from `category_list` (available at t=0)."""
+    """Extract a main category from `category_list` (t=0 safe)."""
     out = df.copy()
 
     if "category_list" in out.columns:
@@ -198,48 +126,58 @@ def make_category_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------
-# Feature assembly
+# Feature assembly (STRICT)
 # ---------------------------------------------------------------------
 
 def assemble_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Assemble a feature-ready DataFrame under the 6-month snapshot constraint."""
+    """Assemble a STRICT snapshot-safe feature DataFrame (Option A).
+
+    Forbidden sources:
+    - last_funding_at
+    - lifetime funding aggregates (funding_total_usd, funding_rounds, etc.)
+    """
     out = df.copy()
 
-    # Snapshot features (restricted to first SNAPSHOT_MONTHS months)
+    # Snapshot-safe time features (only founded_at + first_funding_at used)
     out = make_snapshot_features(out)
 
-    # Geo + category features
+    # Geographic features
     out = make_geo_features(out)
+
+    # Category features
     out = make_category_features(out)
 
-    # IMPORTANT: remove leakage-prone / post-outcome columns from features
-    # Keep date columns for splitting (train.py will drop them after split),
-    # but do not keep engineered lifetime proxies.
-    leakage_cols = [
-        "years_alive",
-        "survived_5y",
-        # raw lifetime aggregates (we use censored versions instead)
+    # ------------------------------------------------------------------
+    # Drop identifiers + forbidden/leakage-prone columns
+    # ------------------------------------------------------------------
+    drop_cols = [
+        # identifiers
+        "permalink", "name", "homepage_url",
+        # raw category_list (we keep category_main)
+        "category_list",
+        # forbidden / post-snapshot / lifetime aggregates
+        "last_funding_at",
         "funding_total_usd",
         "funding_rounds",
-        # do not use last_funding_at as a feature
-        # (we keep it only if present for potential label construction upstream,
-        #  but it's safer to drop it here from the modeling frame)
-        "last_funding_at",
-        # category_list kept only for deriving category_main
-        "category_list",
-        # identifiers
-        "permalink",
-        "name",
-        "homepage_url",
+        "funding_total_usd_num",
+        "log_funding_total",
+        "funding_per_round",
+        "log_funding_per_round",
+        "high_total_funding",
+        "high_funding_per_round",
+        "has_multiple_rounds",
+        # other leaky artifacts if present
+        "time_between_first_last_days",
+        "time_between_first_last_years",
+        "company_age_at_last_funding_years",
+        "avg_round_interval_years",
+        "years_alive",
+        "survived_5y",
     ]
-    out = out.drop(columns=[c for c in leakage_cols if c in out.columns])
+    out = out.drop(columns=[c for c in drop_cols if c in out.columns])
 
     return out
 
-
-# ---------------------------------------------------------------------
-# Public exports
-# ---------------------------------------------------------------------
 
 __all__ = [
     "make_snapshot_features",

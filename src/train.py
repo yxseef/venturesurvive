@@ -105,6 +105,30 @@ def run_modeling_pipeline(
     X_test = test_df.drop(columns=["success"])
 
     # ------------------------------------------------------------------
+    # ✅ STRICT leakage guard (Option A)
+    # ------------------------------------------------------------------
+    forbidden_exact = {
+        "last_funding_at",
+        "years_alive",
+        "survived_5y",
+        "funding_total_usd",
+        "funding_rounds",
+        "funding_total_usd_num",
+        "log_funding_total",
+        "funding_per_round",
+        "log_funding_per_round",
+        "high_total_funding",
+        "high_funding_per_round",
+        "has_multiple_rounds",
+        "time_between_first_last_days",
+        "company_age_at_last_funding_years",
+        "avg_round_interval_years",
+    }
+    bad_cols = sorted([c for c in X_train.columns if c in forbidden_exact])
+    if bad_cols:
+        raise ValueError(f"Leakage columns detected (Option A strict): {bad_cols}")
+
+    # ------------------------------------------------------------------
     # Quick class balance checks (report-friendly)
     # ------------------------------------------------------------------
     pos_rate_train = float(y_train.mean()) if len(y_train) else float("nan")
