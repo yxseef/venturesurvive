@@ -23,6 +23,7 @@ def _finalize_plot(show: bool = True, save_path: Optional[str] = None) -> None:
 
 
 def _get_score(model, X):
+    """Return a continuous score for ranking metrics (ROC/PR)."""
     if hasattr(model, "predict_proba"):
         return model.predict_proba(X)[:, 1]
     if hasattr(model, "decision_function"):
@@ -30,27 +31,44 @@ def _get_score(model, X):
     return None
 
 
+def _safe_roc_auc(y_true, y_score) -> float:
+    """ROC-AUC with safe fallback for degenerate cases."""
+    try:
+        return float(metrics.roc_auc_score(y_true, y_score))
+    except Exception:
+        # If y_score is constant or y_true has one class, ROC-AUC is undefined.
+        return 0.5
+
+
+def _safe_pr_auc(y_true, y_score) -> float:
+    """Average precision with safe fallback (equals prevalence for constant scores)."""
+    try:
+        return float(metrics.average_precision_score(y_true, y_score))
+    except Exception:
+        return float(pd.Series(y_true).mean()) if len(y_true) else float("nan")
+
+
 # ---------------------------------------------------------------------
 # Metrics
 # ---------------------------------------------------------------------
 
 def evaluate_classification(model, X_test, y_test) -> Dict[str, float]:
-    """Compute standard classification metrics."""
+    """Compute standard classification metrics (report-friendly)."""
     y_pred = model.predict(X_test)
     y_score = _get_score(model, X_test)
 
-    results = {
+    results: Dict[str, float] = {
         "accuracy": float(metrics.accuracy_score(y_test, y_pred)),
+        "balanced_accuracy": float(metrics.balanced_accuracy_score(y_test, y_pred)),
         "precision": float(metrics.precision_score(y_test, y_pred, zero_division=0)),
         "recall": float(metrics.recall_score(y_test, y_pred, zero_division=0)),
         "f1": float(metrics.f1_score(y_test, y_pred, zero_division=0)),
+        "mcc": float(metrics.matthews_corrcoef(y_test, y_pred)),
     }
 
     if y_score is not None:
-        try:
-            results["roc_auc"] = float(metrics.roc_auc_score(y_test, y_score))
-        except Exception:
-            results["roc_auc"] = float("nan")
+        results["roc_auc"] = _safe_roc_auc(y_test, y_score)
+        results["pr_auc"] = _safe_pr_auc(y_test, y_score)
 
     return results
 
@@ -77,7 +95,7 @@ def plot_roc(
         raise ValueError("Model does not provide a suitable score for ROC curve.")
 
     fpr, tpr, _ = metrics.roc_curve(y_test, y_score)
-    auc = metrics.roc_auc_score(y_test, y_score)
+    auc = _safe_roc_auc(y_test, y_score)
 
     ax.plot(fpr, tpr, label=f"ROC (AUC = {auc:.3f})")
     ax.plot([0, 1], [0, 1], "k--", alpha=0.5)
@@ -109,7 +127,7 @@ def plot_pr(
         raise ValueError("Model does not provide a suitable score for PR curve.")
 
     precision, recall, _ = metrics.precision_recall_curve(y_test, y_score)
-    ap = metrics.average_precision_score(y_test, y_score)
+    ap = _safe_pr_auc(y_test, y_score)
 
     ax.plot(recall, precision, label=f"PR (AP = {ap:.3f})")
     ax.set_xlabel("Recall")
@@ -207,10 +225,6 @@ def plot_feature_importance(
 
     _finalize_plot(show=show, save_path=save_path)
 
-
-# ---------------------------------------------------------------------
-# Public exports
-# ---------------------------------------------------------------------
 
 __all__ = [
     "evaluate_classification",

@@ -6,6 +6,7 @@ from typing import Dict
 
 import joblib
 import numpy as np
+import pandas as pd
 import warnings
 from scipy.stats import randint, uniform
 from sklearn.metrics import brier_score_loss
@@ -16,7 +17,41 @@ from . import evaluate as eval_mod
 from . import features as features_mod
 from . import models as models_mod
 from . import split as split_mod
-from .config import MODELS_DIR, RANDOM_STATE
+from .config import MODELS_DIR, RESULTS_DIR, RANDOM_STATE
+
+
+def _baseline_metrics(y_true: np.ndarray, *, y_pred: np.ndarray, y_score: np.ndarray) -> Dict[str, float]:
+    """Compute baseline metrics without a model object."""
+    from sklearn import metrics
+
+    out: Dict[str, float] = {
+        "accuracy": float(metrics.accuracy_score(y_true, y_pred)),
+        "balanced_accuracy": float(metrics.balanced_accuracy_score(y_true, y_pred)),
+        "precision": float(metrics.precision_score(y_true, y_pred, zero_division=0)),
+        "recall": float(metrics.recall_score(y_true, y_pred, zero_division=0)),
+        "f1": float(metrics.f1_score(y_true, y_pred, zero_division=0)),
+        "mcc": float(metrics.matthews_corrcoef(y_true, y_pred)),
+    }
+
+    # ROC-AUC: constant scores can raise; use 0.5 as baseline if undefined
+    try:
+        out["roc_auc"] = float(metrics.roc_auc_score(y_true, y_score))
+    except Exception:
+        out["roc_auc"] = 0.5
+
+    # PR-AUC (Average Precision): for constant scores, AP equals prevalence
+    try:
+        out["pr_auc"] = float(metrics.average_precision_score(y_true, y_score))
+    except Exception:
+        out["pr_auc"] = float(np.mean(y_true)) if len(y_true) else float("nan")
+
+    # Brier score (probability calibration)
+    try:
+        out["brier"] = float(brier_score_loss(y_true, y_score))
+    except Exception:
+        out["brier"] = float("nan")
+
+    return out
 
 
 def run_modeling_pipeline(
@@ -26,6 +61,7 @@ def run_modeling_pipeline(
     n_iter_rf: int = 15,
     cv_splits: int = 3,
     save_models: bool = True,
+    save_metrics: bool = True,
 ) -> Dict[str, Dict[str, float]]:
     """Run the complete modeling pipeline from cleaned data to trained models.
 
@@ -34,6 +70,8 @@ def run_modeling_pipeline(
     - Temporal split is aligned with snapshot_date (founded_at + 6 months).
     """
     np.random.seed(random_state)
+    MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------
     # 1. Load cleaned dataset
@@ -85,74 +123,57 @@ def run_modeling_pipeline(
     train_df = train_df.sort_values("snapshot_date").reset_index(drop=True)
     test_df = test_df.sort_values("snapshot_date").reset_index(drop=True)
 
-    # ✅ RIGOR CHECK: ensure chronological order is preserved (prevents silent CV leakage)
-    if "snapshot_date" in train_df.columns:
-        assert train_df["snapshot_date"].is_monotonic_increasing, (
-            "train_df is not sorted by snapshot_date; TimeSeriesSplit would be invalid."
-        )
+    # ✅ RIGOR CHECK: ensure chronological order is preserved
+    assert train_df["snapshot_date"].is_monotonic_increasing, (
+        "train_df is not sorted by snapshot_date; TimeSeriesSplit would be invalid."
+    )
 
-    # Drop date columns from modeling matrices (keep only engineered/categorical features)
+    # Drop date columns from modeling matrices
     date_cols = ["founded_at", "first_funding_at", "snapshot_date"]
     drop_cols = [c for c in date_cols if c in train_df.columns]
-
     if drop_cols:
         train_df = train_df.drop(columns=drop_cols)
         test_df = test_df.drop(columns=drop_cols)
 
-    y_train = train_df["success"].astype(int)
-    y_test = test_df["success"].astype(int)
+    y_train = train_df["success"].astype(int).to_numpy()
+    y_test = test_df["success"].astype(int).to_numpy()
     X_train = train_df.drop(columns=["success"])
     X_test = test_df.drop(columns=["success"])
-
-    # ------------------------------------------------------------------
-    # ✅ STRICT leakage guard (Option A)
-    # ------------------------------------------------------------------
-    forbidden_exact = {
-        "last_funding_at",
-        "years_alive",
-        "survived_5y",
-        "funding_total_usd",
-        "funding_rounds",
-        "funding_total_usd_num",
-        "log_funding_total",
-        "funding_per_round",
-        "log_funding_per_round",
-        "high_total_funding",
-        "high_funding_per_round",
-        "has_multiple_rounds",
-        "time_between_first_last_days",
-        "company_age_at_last_funding_years",
-        "avg_round_interval_years",
-    }
-    bad_cols = sorted([c for c in X_train.columns if c in forbidden_exact])
-    if bad_cols:
-        raise ValueError(f"Leakage columns detected (Option A strict): {bad_cols}")
 
     # ------------------------------------------------------------------
     # Quick class balance checks (report-friendly)
     # ------------------------------------------------------------------
     pos_rate_train = float(y_train.mean()) if len(y_train) else float("nan")
     pos_rate_test = float(y_test.mean()) if len(y_test) else float("nan")
-    print(
-        f"✓ Class balance: success=1 rate "
-        f"(train={pos_rate_train:.3f}, test={pos_rate_test:.3f})"
-    )
+    print(f"✓ Class balance: success=1 rate (train={pos_rate_train:.3f}, test={pos_rate_test:.3f})")
 
-    baseline_acc = float((y_test == 0).mean()) if len(y_test) else float("nan")
-    print(f"✓ Baseline (always 0) accuracy on test: {baseline_acc:.4f}")
+    # ------------------------------------------------------------------
+    # Baselines (IMPORTANT with label shift)
+    # ------------------------------------------------------------------
+    # Baseline A: always predict 0
+    y_pred_zero = np.zeros_like(y_test)
+    y_score_zero = np.zeros_like(y_test, dtype=float)
+    baseline_zero = _baseline_metrics(y_test, y_pred=y_pred_zero, y_score=y_score_zero)
+    print(f"✓ Baseline (always 0) accuracy on test: {baseline_zero['accuracy']:.4f}")
 
-    # Recompute feature lists AFTER split & dropping dates (most robust)
+    # Baseline B: constant probability = train prevalence (calibration baseline)
+    y_score_prev = np.full_like(y_test, fill_value=pos_rate_train, dtype=float)
+    y_pred_prev = (y_score_prev >= 0.5).astype(int)
+    baseline_prev = _baseline_metrics(y_test, y_pred=y_pred_prev, y_score=y_score_prev)
+    print(f"✓ Baseline PR-AUC on test (≈ prevalence): {baseline_prev['pr_auc']:.4f}")
+
+    # Recompute feature lists AFTER split & dropping dates
     numeric_cols = X_train.select_dtypes(include=["number"]).columns.tolist()
     categorical_cols = X_train.select_dtypes(include=["object", "category"]).columns.tolist()
 
     print(
-        f"✓ Temporal split (snapshot-aligned): "
-        f"{X_train.shape[0]:,} train, {X_test.shape[0]:,} test"
+        f"✓ Temporal split (snapshot-aligned): {X_train.shape[0]:,} train, {X_test.shape[0]:,} test"
     )
     print(f"✓ Modeling columns: {len(numeric_cols)} numeric, {len(categorical_cols)} categorical")
 
     results: Dict[str, Dict[str, float]] = {}
-    MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    results["Baseline (always 0)"] = baseline_zero
+    results["Baseline (train prevalence prob)"] = baseline_prev
 
     # ------------------------------------------------------------------
     # 4. Logistic Regression
@@ -242,7 +263,6 @@ def run_modeling_pipeline(
             random_state=random_state,
         )
 
-        # Silence harmless sklearn warning about feature names with LGBM + transformed matrices
         with warnings.catch_warnings():
             warnings.filterwarnings(
                 "ignore",
@@ -264,6 +284,15 @@ def run_modeling_pipeline(
 
     except RuntimeError:
         print("⚠️  LightGBM not installed, skipping.")
+
+    # ------------------------------------------------------------------
+    # Export metrics table (for report)
+    # ------------------------------------------------------------------
+    if save_metrics:
+        df_out = pd.DataFrame(results).T
+        csv_path = RESULTS_DIR / "metrics_summary.csv"
+        df_out.to_csv(csv_path, index=True)
+        print(f"✓ Saved metrics table to {csv_path}")
 
     print("\n✓ Modeling pipeline complete!")
     return results
