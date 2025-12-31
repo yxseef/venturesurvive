@@ -6,9 +6,10 @@ from typing import Dict
 
 import joblib
 import numpy as np
+import warnings
 from scipy.stats import randint, uniform
 from sklearn.metrics import brier_score_loss
-from sklearn.model_selection import RandomizedSearchCV
+from sklearn.model_selection import RandomizedSearchCV, TimeSeriesSplit
 
 from . import data as data_mod
 from . import evaluate as eval_mod
@@ -26,7 +27,12 @@ def run_modeling_pipeline(
     cv_splits: int = 3,
     save_models: bool = True,
 ) -> Dict[str, Dict[str, float]]:
-    """Run the complete modeling pipeline from cleaned data to trained models."""
+    """Run the complete modeling pipeline from cleaned data to trained models.
+
+    Snapshot definition:
+    - Features are computed under a 6-month snapshot constraint in src/features.py.
+    - Temporal split is aligned with snapshot_date (founded_at + 6 months).
+    """
     np.random.seed(random_state)
 
     # ------------------------------------------------------------------
@@ -36,38 +42,57 @@ def run_modeling_pipeline(
     print(f"✓ Dataset loaded: {df_clean.shape[0]:,} rows × {df_clean.shape[1]} columns")
 
     # ------------------------------------------------------------------
-    # 2. Feature assembly
+    # 2. Feature assembly (6-month snapshot-safe)
     # ------------------------------------------------------------------
     df_features = features_mod.assemble_features(df_clean)
 
     if "success" not in df_features.columns:
         raise KeyError("Target column 'success' not found in dataset")
 
+    # Never use status as feature
     if "status" in df_features.columns:
         df_features = df_features.drop(columns=["status"])
 
     y = df_features["success"].astype(int)
     X = df_features.drop(columns=["success"])
 
-    numeric_cols = X.select_dtypes(include=["number"]).columns.tolist()
-    categorical_cols = X.select_dtypes(include=["object", "category"]).columns.tolist()
+    # We need snapshot_date for temporal split
+    if "snapshot_date" not in X.columns:
+        raise KeyError(
+            "Column 'snapshot_date' not found after feature assembly. "
+            "It is required for snapshot-aligned temporal split."
+        )
 
-    print(
-        f"✓ Features assembled: {len(numeric_cols)} numeric, "
-        f"{len(categorical_cols)} categorical"
-    )
+    print("✓ Features assembled under snapshot constraint")
 
     # ------------------------------------------------------------------
-    # 3. Temporal train / test split
+    # 3. Temporal train / test split aligned with snapshot_date
     # ------------------------------------------------------------------
     df_all = X.copy()
     df_all["success"] = y.values
 
-    train_df, test_df = split_mod.temporal_split(
-        df_all, cutoff_date=cutoff_date, date_col="first_funding_at"
+    train_df, test_df = split_mod.temporal_split_snapshot(
+        df_all, snapshot_col="snapshot_date", cutoff_date=cutoff_date
     )
 
-    date_cols = ["founded_at", "first_funding_at", "last_funding_at"]
+    if train_df.empty or test_df.empty:
+        raise ValueError(
+            "Temporal split produced an empty train or test set. "
+            "Adjust cutoff_date or check snapshot_date availability."
+        )
+
+    # Sort train/test chronologically (important for TimeSeriesSplit + clean reporting)
+    train_df = train_df.sort_values("snapshot_date").reset_index(drop=True)
+    test_df = test_df.sort_values("snapshot_date").reset_index(drop=True)
+
+    # ✅ RIGOR CHECK: ensure chronological order is preserved (prevents silent CV leakage)
+    if "snapshot_date" in train_df.columns:
+        assert train_df["snapshot_date"].is_monotonic_increasing, (
+            "train_df is not sorted by snapshot_date; TimeSeriesSplit would be invalid."
+        )
+
+    # Drop date columns from modeling matrices (keep only engineered/categorical features)
+    date_cols = ["founded_at", "first_funding_at", "snapshot_date"]
     drop_cols = [c for c in date_cols if c in train_df.columns]
 
     if drop_cols:
@@ -79,10 +104,30 @@ def run_modeling_pipeline(
     X_train = train_df.drop(columns=["success"])
     X_test = test_df.drop(columns=["success"])
 
-    print(f"✓ Temporal split: {X_train.shape[0]:,} train, {X_test.shape[0]:,} test")
+    # ------------------------------------------------------------------
+    # Quick class balance checks (report-friendly)
+    # ------------------------------------------------------------------
+    pos_rate_train = float(y_train.mean()) if len(y_train) else float("nan")
+    pos_rate_test = float(y_test.mean()) if len(y_test) else float("nan")
+    print(
+        f"✓ Class balance: success=1 rate "
+        f"(train={pos_rate_train:.3f}, test={pos_rate_test:.3f})"
+    )
+
+    baseline_acc = float((y_test == 0).mean()) if len(y_test) else float("nan")
+    print(f"✓ Baseline (always 0) accuracy on test: {baseline_acc:.4f}")
+
+    # Recompute feature lists AFTER split & dropping dates (most robust)
+    numeric_cols = X_train.select_dtypes(include=["number"]).columns.tolist()
+    categorical_cols = X_train.select_dtypes(include=["object", "category"]).columns.tolist()
+
+    print(
+        f"✓ Temporal split (snapshot-aligned): "
+        f"{X_train.shape[0]:,} train, {X_test.shape[0]:,} test"
+    )
+    print(f"✓ Modeling columns: {len(numeric_cols)} numeric, {len(categorical_cols)} categorical")
 
     results: Dict[str, Dict[str, float]] = {}
-
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------
@@ -124,10 +169,11 @@ def run_modeling_pipeline(
         joblib.dump(rf_baseline, MODELS_DIR / "random_forest_baseline.joblib")
 
     # ------------------------------------------------------------------
-    # 6. Random Forest tuning (optional)
+    # 6. Random Forest tuning (optional) with TimeSeriesSplit
     # ------------------------------------------------------------------
     if tune_rf:
-        print("🔹 Tuning Random Forest hyperparameters...")
+        print("🔹 Tuning Random Forest hyperparameters (TimeSeriesSplit)...")
+
         param_distributions = {
             "classifier__n_estimators": randint(80, 250),
             "classifier__max_depth": randint(4, 18),
@@ -137,12 +183,14 @@ def run_modeling_pipeline(
             "classifier__class_weight": ["balanced", None],
         }
 
+        tscv = TimeSeriesSplit(n_splits=cv_splits)
+
         tuner = RandomizedSearchCV(
             estimator=rf_baseline,
             param_distributions=param_distributions,
             n_iter=n_iter_rf,
             scoring="roc_auc",
-            cv=cv_splits,
+            cv=tscv,
             n_jobs=-1,
             random_state=random_state,
             verbose=1,
@@ -169,10 +217,21 @@ def run_modeling_pipeline(
             categorical_features=categorical_cols,
             random_state=random_state,
         )
-        lgbm_pipe.fit(X_train, y_train)
 
-        y_prob_lgbm = lgbm_pipe.predict_proba(X_test)[:, 1]
-        metrics_lgbm = eval_mod.evaluate_classification(lgbm_pipe, X_test, y_test)
+        # Silence harmless sklearn warning about feature names with LGBM + transformed matrices
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message=r".*X does not have valid feature names, but LGBMClassifier was fitted with feature names.*",
+                category=UserWarning,
+                module=r"sklearn\.utils\.validation",
+            )
+
+            lgbm_pipe.fit(X_train, y_train)
+
+            y_prob_lgbm = lgbm_pipe.predict_proba(X_test)[:, 1]
+            metrics_lgbm = eval_mod.evaluate_classification(lgbm_pipe, X_test, y_test)
+
         metrics_lgbm["brier"] = float(brier_score_loss(y_test, y_prob_lgbm))
         results["LightGBM"] = metrics_lgbm
 

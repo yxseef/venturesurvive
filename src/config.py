@@ -20,10 +20,15 @@ MODELS_DIR = PROJECT_ROOT / "models"
 RESULTS_DIR = PROJECT_ROOT / "results"
 
 # ---------------------------------------------------------------------
-# Global settings
+# Modeling setup
 # ---------------------------------------------------------------------
 
 RANDOM_STATE = 42
+
+# We define the prediction time as a "snapshot" taken after the first N months
+# of a startup's life. All features must be derivable using information available
+# up to founded_at + SNAPSHOT_MONTHS.
+SNAPSHOT_MONTHS = 6
 
 # ---------------------------------------------------------------------
 # Ensure required directories exist (side-effect on import is acceptable)
@@ -46,4 +51,5 @@ __all__ = [
     "MODELS_DIR",
     "RESULTS_DIR",
     "RANDOM_STATE",
+    "SNAPSHOT_MONTHS",
 ]

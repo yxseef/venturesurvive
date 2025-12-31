@@ -21,23 +21,22 @@ def temporal_split(
     """
     out = df.copy()
 
-    # Ensure datetime for the date column
     out[date_col] = pd.to_datetime(out[date_col], errors="coerce")
-
-    # Make cutoff timezone-compatible with the series
     cutoff = pd.to_datetime(cutoff_date, errors="raise")
 
-    # If the series is tz-aware, localize cutoff to same tz
-    if getattr(out[date_col].dt, "tz", None) is not None:
-        cutoff = cutoff.tz_localize(out[date_col].dt.tz)
-    
-    # Convert both to tz-naive for comparison (simpler and more robust)
-    if hasattr(out[date_col].dt, "tz") and out[date_col].dt.tz is not None:
-        out[date_col] = out[date_col].dt.tz_localize(None)
-    if hasattr(cutoff, "tz") and cutoff.tz is not None:
-        cutoff = cutoff.tz_localize(None)
+    # Make tz-naive comparisons robust
+    try:
+        if getattr(out[date_col].dt, "tz", None) is not None:
+            out[date_col] = out[date_col].dt.tz_localize(None)
+    except Exception:
+        pass
 
-    # Build masks
+    try:
+        if getattr(cutoff, "tz", None) is not None:
+            cutoff = cutoff.tz_localize(None)
+    except Exception:
+        pass
+
     mask_valid = out[date_col].notna()
     mask_train = mask_valid & (out[date_col] < cutoff)
     mask_test = mask_valid & (out[date_col] >= cutoff)
@@ -48,4 +47,24 @@ def temporal_split(
     return train_df, test_df
 
 
-__all__ = ["temporal_split"]
+def temporal_split_snapshot(
+    df: pd.DataFrame,
+    *,
+    snapshot_col: str = "snapshot_date",
+    cutoff_date: str = "2013-01-01",
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Temporal split aligned with the prediction time (snapshot).
+
+    With a 6-month snapshot approach, the 'time of prediction' for each startup is
+    snapshot_date = founded_at + 6 months. This function splits the dataset using
+    that snapshot date:
+
+    - Train: snapshot_date < cutoff
+    - Test : snapshot_date >= cutoff
+
+    Rows with missing snapshot dates are dropped (conservative choice).
+    """
+    return temporal_split(df, date_col=snapshot_col, cutoff_date=cutoff_date)
+
+
+__all__ = ["temporal_split", "temporal_split_snapshot"]

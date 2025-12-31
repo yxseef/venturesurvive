@@ -1,22 +1,14 @@
-"""VentureSurvive package for startup success prediction."""
+"""VentureSurvive package for startup success prediction.
 
-from . import (
-    config,
-    data,
-    eda,
-    preprocess,
-    features,
-    split,
-    models,
-    evaluate,
-    train,
-    utils,
-)
+Note:
+We intentionally avoid importing submodules at package import time.
+This prevents optional dependencies (e.g., seaborn in eda) from breaking
+the whole package and keeps imports fast and robust.
+"""
 
 __all__ = [
     "config",
     "data",
-    "eda",
     "preprocess",
     "features",
     "split",
@@ -24,4 +16,5 @@ __all__ = [
     "evaluate",
     "train",
     "utils",
+    # "eda" is intentionally not exported by default (optional dependency seaborn)
 ]
