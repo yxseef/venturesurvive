@@ -1,126 +1,121 @@
-# VentureSurvive — Startup Survival Prediction for VC Risk Assessment
+# VentureSurvive — Startup Survival Prediction with Strict 6-Month Snapshot
 
-VentureSurvive is a research-oriented project that studies **startup survival** using
-public venture data. The goal is to build **reproducible**, **interpretable** models
-that estimate the probability that a startup will still be alive (or will have
-reached a successful exit) after at least five years. The target audience is
-primarily academics and data scientists interested in startup dynamics and
-venture capital risk assessment.
+VentureSurvive is a **research-grade machine learning project** that predicts startup success using **only information available in the first 6 months** of a startup's life. The project implements **rigorous temporal validation** to ensure no target leakage and provides comprehensive drift diagnostics for production-level monitoring.
 
+## 🎯 Key Innovation
 
-## 1. Research Problem
-
-Early-stage investors and researchers often face two challenges:
-
-- **Data sparsity and censoring**: many startups disappear silently without a
-  clear "closed" event, and observation windows are limited.
-- **Noisy status labels**: raw company status fields (e.g. `acquired`, `ipo`,
-  `closed`, `operating`) mix truly failed startups, still-surviving startups,
-  and success stories.
-
-This project defines a more meaningful **binary survival target** and builds a
-full machine learning pipeline to predict it, with an emphasis on:
-
-- clear **target definition** based on survival horizon and exit events,
-- explicit **feature construction** (funding history, geography, categories,
-  timing of events),
-- rigorous **temporal validation** (train/test split in time),
-- **interpretable evaluation** and feature importance analysis.
+Unlike traditional startup survival models that use lifetime aggregates, VentureSurvive enforces a **strict 6-month snapshot constraint**:
+- **Features**: Only derivable from information available at `t ≤ founded_at + 6 months`
+- **Target**: Long-term survival (≥5 years) or successful exit (acquired/IPO)
+- **Validation**: Temporal split aligned with snapshot dates
+- **Monitoring**: Population Stability Index (PSI) and residual shift diagnostics
 
 
-## 2. Data
+## 1. Research Problem & Solution
 
-The project uses a startups dataset in CSV form (e.g. Crunchbase-like export),
-stored under:
+### 🚨 Critical Challenge: Target Leakage
+Most startup survival models suffer from **target leakage** by using:
+- Lifetime funding totals (`funding_total_usd`, `funding_rounds`)
+- Last funding dates (`last_funding_at`)
+- Company age at observation (`years_alive`)
 
-- `data/startups_raw.csv` — raw dataset,
-- `data/processed/startups_clean.csv` — cleaned and feature-enriched dataset
-  produced by the preprocessing pipeline.
+These features contain **future information** unavailable at prediction time, leading to **overly optimistic performance** that doesn't generalize.
 
-Key raw variables include (non-exhaustive):
+### ✅ Our Solution: Strict Snapshot Methodology
+VentureSurvive implements **rigorous academic temporal rigor**:
 
-- `status`: categorical company status (`acquired`, `ipo`, `closed`, ...),
-- `funding_total_usd`: total funding raised (string/float),
-- `funding_rounds`: number of funding rounds,
-- `country_code`, `region`, `city`, `state_code`: geography,
-- `category_list`: pipe-separated list of industries,
-- `founded_at`, `first_funding_at`, `last_funding_at`: key dates.
+- **6-Month Snapshot**: Prediction time = `founded_at + 6 months`
+- **Feature Censoring**: Only use events occurring `≤ snapshot_date`
+- **Target Definition**: Success = (survived ≥5 years) OR (acquired/IPO)
+- **Leakage Guards**: Automated validation prevents future information usage
 
-The **cleaned dataset** adds engineered variables such as:
 
-- `years_alive`: approximate company lifetime in years,
-- `survived_5y`: indicator of survival for at least 5 years,
-- `success`: final binary target used for modeling,
-- time-based, funding-based and geographic features (see below).
+## 2. Data & Preprocessing
+
+### 📊 Dataset Structure
+```
+data/
+├── startups_raw.csv              # Raw Crunchbase-like export
+└── processed/
+    └── startups_clean.csv        # Cleaned + snapshot-safe features
+```
+
+### 🔧 Key Raw Variables
+- **Status**: `acquired`, `ipo`, `closed`, `operating`
+- **Funding**: `funding_total_usd`, `funding_rounds`
+- **Dates**: `founded_at`, `first_funding_at`, `last_funding_at`
+- **Geography**: `country_code`, `region`, `city`
+- **Industry**: `category_list` (pipe-separated)
+
+### ⚡ Preprocessing Pipeline (`src/preprocess.py`)
+1. **Date Validation**: Remove future/outlier dates (post-2025, pre-1980)
+2. **Eligibility Filtering**: Keep only companies observable for ≥5 years
+3. **Target Engineering**: Compute `success` using survival + exit events
+4. **Leakage Prevention**: Drop `last_funding_at`, `years_alive`, lifetime aggregates
+5. **Snapshot Creation**: Add `snapshot_date = founded_at + 6 months`
+
+**Result**: Dataset size varies with filtering (see `results/metrics_summary.csv` for latest run statistics)
 
 
 ## 3. Target Definition
 
-The main binary target `success` is defined to capture **long-term survival or
-clear exits**, instead of raw status alone.
+### 🎯 Binary Success Target
+The `success` variable captures **long-term survival or clear exits**:
 
-Let:
+```
+success = 1 if (years_alive ≥ 5) OR (status ∈ {acquired, ipo})
+success = 0 otherwise
+```
 
-- `years_alive` be the time (in years) between `founded_at` and the last
-  observed funding date (or first funding date, when `last_funding_at` is
-  missing),
-- `status ∈ {acquired, ipo, closed, ...}` be the status field.
+### ⏰ Temporal Constraint
+- **Prediction Time**: `snapshot_date = founded_at + 6 months`
+- **Observation Window**: Must be observable for ≥5 years after snapshot
+- **Target Engineering**: Uses `last_funding_at` ONLY for label construction, never as feature
 
-Then:
+### 📈 Success Rate Distribution
+- **Train (pre-cutoff)**: Higher success rate (survivorship bias in early cohorts)
+- **Test (post-cutoff)**: Lower success rate (more realistic, includes recent failures)
 
-- `survived_5y = 1` if `years_alive ≥ 5`, else `0`.
-- `success = 1` if `survived_5y = 1` **or** `status ∈ {acquired, ipo}`.
-- `success = 0` otherwise.
-
-Thus, a company is considered **successful** if it either:
-
-1. survives at least 5 years (proxy for resilience), or
-2. reaches a clear exit event (`acquired` or IPO).
-
-This definition is implemented in `src/data.py` / `src/preprocess.py` and
-ensures a consistent, reproducible target across notebooks and scripts.
+This **temporal shift** is expected and properly quantified in our diagnostics (see `results/residual_shift_by_year.csv`).
 
 
-## 4. Methodology and Pipeline
+## 4. Feature Engineering (Snapshot-Safe)
 
-The project follows a **code-first**, modular design. All business logic lives
-in `src/`, while notebooks are thin orchestration/visualization clients.
+### 🚫 Forbidden Features (Prevent Leakage)
+```
+❌ last_funding_at          # Future information
+❌ funding_total_usd        # Lifetime aggregate  
+❌ funding_rounds           # Lifetime aggregate
+❌ years_alive             # Post-snapshot outcome
+❌ survived_5y             # Target leakage
+```
 
-### 4.1 Overall pipeline
+### ✅ Allowed Features (t ≤ 6 months)
+#### Time-Based Features
+- `funded_within_6m`: Binary indicator of first funding ≤ snapshot
+- `age_at_first_funding_days`: Days from founding to first funding (censored)
+- `snapshot_horizon_days`: Exact 6-month window length
+- `first_funding_missing`: Missingness indicator
 
-1. **Data loading** (`src/data.py`)
-   - Load raw CSV (`load_raw_data`).
-   - Convert relevant columns to appropriate types (dates, numerics).
+#### Geographic Features
+- `is_us`, `is_uk`, `is_eu`: Binary country indicators
+- Missingness flags for geographic variables
 
-2. **Preprocessing & target engineering** (`src/preprocess.py`)
-   - Filter to modeling-relevant statuses: `acquired`, `ipo`, `closed`.
-   - Convert date columns to pandas `datetime`.
-   - Compute `years_alive`, `survived_5y`, and `success`.
-   - Save the cleaned dataset to `data/processed/startups_clean.csv`.
+#### Category Features
+- `category_main`: First industry category from pipe-separated list
 
-3. **Feature engineering** (`src/features.py`)
-   - Time-based features (in days/years):
-     - `age_at_first_funding_days`,
-     - `time_between_first_last_days`,
-     - `time_to_first_funding_years`,
-     - `company_age_at_last_funding_years`,
-     - `avg_round_interval_years`.
-   - Funding-based features:
-     - numeric-safe `funding_total_usd_num`,
-     - `funding_per_round`, `log_funding_total`, `log_funding_per_round`,
-     - `high_total_funding`, `high_funding_per_round`, `has_multiple_rounds`.
-   - Geographic & category features:
-     - `is_us`, `is_uk`, `is_eu`, missingness flags,
-     - `category_main` extracted from `category_list`.
-   - Remove obvious identifiers and leakage-prone columns
-     (`permalink`, `name`, `homepage_url`, `category_list`, etc.).
+### 🛡️ Leakage Prevention
+```python
+# Automated validation in train.py
+forbidden = {"last_funding_at", "years_alive", "funding_total_usd"}
+assert not any(col in X_train.columns for col in forbidden)
+```
 
 4. **Temporal train/test split** (`src/split.py`)
-   - Split at a fixed cutoff date (default `2013-01-01`) using
-     `first_funding_at`:
-     - **Train**: startups with first funding strictly before cutoff.
-     - **Test**: startups with first funding on or after cutoff.
-   - This simulates a realistic “train on the past, test on the future” setup.
+   - Split at a cutoff date using `snapshot_date` (founded_at + 6 months):
+     - **Train**: `snapshot_date < cutoff_date`
+     - **Test**: `snapshot_date ≥ cutoff_date`
+   - Auto-cutoff based on quantiles prevents empty splits after filtering.
 
 5. **Modeling** (`src/models.py`)
    - Common preprocessing via `ColumnTransformer`:
@@ -156,151 +151,180 @@ in `src/`, while notebooks are thin orchestration/visualization clients.
    - Relationships between `success` and funding/geographic variables.
 
 
-## 5. Experiments and Results
+## 5. Modeling & Validation
 
-Experiments are run via:
+### 🤖 Model Pipeline
+1. **Preprocessing**: Median imputation + scaling (numeric), most-frequent + one-hot (categorical)
+2. **Models**: Logistic Regression, Random Forest (baseline/tuned), LightGBM
+3. **Cross-Validation**: TimeSeriesSplit (n_splits=3) for hyperparameter tuning
+4. **Evaluation**: ROC-AUC, PR-AUC, Brier score
 
-```bash
-python main.py
+### 🔄 Temporal Validation Strategy
+```python
+# Split aligned with snapshot_date (founded_at + 6 months)
+# Auto-cutoff based on snapshot_date quantile (default 80/20 split)
+cutoff_date = snapshot_date.quantile(0.80)  # e.g., 2008-11-01
+
+# Train: snapshot_date < cutoff_date (past cohorts)
+# Test:  snapshot_date ≥ cutoff_date (future cohorts)
 ```
 
-using a fixed random seed (`RANDOM_STATE = 42`) and a temporal cutoff date of
-`2013-01-01`. On the current dataset (≈13k startups), the following test
-performances are obtained:
+**Note**: The split uses `snapshot_date` (not `first_funding_at`) to align with the prediction time. Auto-cutoff prevents empty splits after filtering.
 
-| Model                     | Accuracy | Precision | Recall | F1    | ROC AUC |
-|---------------------------|----------|-----------|--------|-------|---------|
-| Logistic Regression       | 0.80     | 0.69      | 0.72   | 0.70  | **0.87** |
-| Random Forest (baseline)  | 0.78     | 0.65      | 0.71   | 0.68  | 0.85    |
-| Random Forest (tuned)     | 0.80     | 0.69      | 0.71   | 0.70  | 0.86    |
-| LightGBM (baseline)       | 0.79     | 0.68      | 0.71   | 0.70  | 0.86    |
+### 📊 Performance Results
+See `results/metrics_summary.csv` for the latest performance metrics. Example from a recent run:
 
-These numbers are reproduced programmatically by the `run_modeling_pipeline`
-function and summarized again in `plots.py`.
+| Model                    | ROC-AUC | PR-AUC | Accuracy | Brier Score |
+|--------------------------|---------|--------|----------|-------------|
+| Logistic Regression      | 0.66    | 0.65   | 0.59     | 0.28        |
+| Random Forest (baseline) | 0.65    | 0.63   | 0.56     | 0.30        |
+| Random Forest (tuned)    | 0.67    | 0.65   | 0.60     | 0.23        |
+| LightGBM                 | 0.66    | 0.65   | 0.59     | 0.29        |
 
+**Note**: Realistic performance due to strict temporal validation and no leakage.
 
-### 5.1 Feature importance (Logistic Regression)
+### 📈 Visual Results
+Key visualizations are generated automatically:
+- `results/roc_comparison.png` - ROC curves comparison
+- `results/residual_shift_by_year.png` - Success rate by snapshot year
+- `results/feature_importance.png` - Feature importance ranking
 
-Permutation feature importance (computed on the test set) indicates that the
-most predictive variables include:
+## 6. Drift Diagnostics & Monitoring
 
-- **`category_main`** — high-level industry category;
-- **funding intensity features** — `log_funding_per_round`,
-  `log_funding_total`;
-- **time-based features** — `age_at_first_funding_days`,
-  `time_to_first_funding_years`;
-- **geographic indicators** — `is_us`, `country_code`, and missingness flags.
+### 📈 Population Stability Index (PSI)
+Automated drift detection on numeric features (see `results/covariate_shift_psi_numeric.csv`):
 
-These results suggest that both **industry** and **funding dynamics** (level
-and timing) are important drivers of long-term startup survival.
+```
+Top drifted features (PSI):
+age_at_first_funding_days: 0.635  (moderate drift)
+snapshot_horizon_days:     0.238  (light drift)
+funded_within_6m:          0.000  (stable)
+```
 
+### 📊 Residual Shift Analysis
+Year-by-year success rate comparison between train/test cohorts:
+- **Export**: `results/residual_shift_by_year.csv`
+- **Visualization**: `results/residual_shift_by_year.png`
+- **Insight**: Quantifies temporal distribution shift (expected in survival analysis)
 
-## 6. Reproducibility and Usage
+### 🛡️ Monitoring-Style Diagnostics
+```python
+# Automated checks in pipeline
+assert "snapshot_date" not in X_train.columns  # No leakage
+assert train_df["snapshot_date"].is_monotonic_increasing  # CV validity
+```
 
-### 6.1 Environment setup
+## 7. Usage & Reproducibility
 
-The project uses Python 3 and a standard scientific stack (`pandas`,
-`numpy`, `scikit-learn`, `matplotlib`, `seaborn`, `lightgbm`). Dependencies
-are listed in `requirements.txt`.
-
-Typical setup:
-
+### 🚀 Quick Start
 ```bash
+# Clone and setup
+git clone <repository>
+cd venturesurvive
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+
+# Run full pipeline
+python main.py
+
+# Quick demo with sample data
+python main.py --quick-start --demo-data
 ```
 
-### 6.2 Running the pipeline
+### 📋 What the Pipeline Does
+1. **Data preprocessing** with strict temporal constraints
+2. **Feature engineering** (6-month snapshot-safe)
+3. **Temporal train/test split** (auto-cutoff based on quantiles)
+4. **Model training** (LR, RF, LightGBM) with TimeSeriesSplit CV
+5. **Drift diagnostics** (PSI + residual shift analysis)
+6. **Performance evaluation** and model saving
 
-1. **Preprocess data and train models** (end-to-end):
+### 📊 Outputs Generated
+```
+models/                          # Trained model pipelines
+├── log_reg_baseline.joblib
+├── random_forest_baseline.joblib
+├── random_forest_tuned.joblib
+└── lightgbm_baseline.joblib
 
-   ```bash
-   python main.py
-   ```
+results/                         # Diagnostics & metrics
+├── metrics_summary.csv
+├── residual_shift_by_year.csv
+├── covariate_shift_psi_numeric.csv
+├── roc_curves_comparison.png
+├── temporal_shift_analysis.png
+├── feature_importance_ranking.png
+├── calibration_plots.png
+└── psi_drift_monitoring.png
+```
 
-   This will:
+### 🔧 Advanced Usage
+```python
+# Custom cutoff date
+from src.train import run_modeling_pipeline
+results = run_modeling_pipeline(cutoff_date="2012-01-01")
 
-   - load raw / cleaned data,
-   - assemble features,
-   - perform temporal split,
-   - train all models,
-   - output metrics to the console,
-   - save trained models under `models/`.
-
-2. **Generate evaluation plots**:
-
-   ```bash
-   python plots.py
-   ```
-
-   This will:
-
-   - load the trained models from `models/`,
-   - recompute the test set from the cleaned data,
-   - generate and save the following figures under `results/`:
-     - `roc_comparison.png` — ROC curves for all models,
-     - `pr_comparison.png` — Precision-Recall curves,
-     - `confusion_matrices.png` — normalized confusion matrices,
-     - `metrics_comparison.png` — bar chart of main metrics,
-     - `feature_importance.png` — top feature importances.
-   - save a CSV table of permutation importances as
-     `feature_importance.csv`.
+# Load and evaluate models
+from src.evaluate import evaluate_classification
+metrics = evaluate_classification(model, X_test, y_test)
+```
 
 
-## 7. Project Structure
+## 8. Project Structure
 
-```text
+```
 venturesurvive/
 ├── data/
-│   ├── startups_raw.csv            # raw dataset (not versioned)
+│   ├── startups_raw.csv            # Raw dataset (not versioned)
 │   └── processed/
-│       └── startups_clean.csv      # cleaned + engineered dataset
-├── models/                         # saved trained model pipelines
-├── results/                        # figures and CSVs from evaluation
-├── notebooks/                      # EDA and modeling notebooks (thin clients)
+│       └── startups_clean.csv      # Cleaned + snapshot-safe dataset
+├── models/                         # Trained model pipelines
+├── results/                        # Diagnostics, plots, metrics
 ├── src/
 │   ├── __init__.py
-│   ├── config.py                   # paths, constants, random seed
-│   ├── data.py                     # data loading + date/target helpers
-│   ├── preprocess.py               # filtering + target engineering
-│   ├── features.py                 # feature engineering utilities
-│   ├── split.py                    # temporal train/test split
-│   ├── models.py                   # model + preprocessing pipelines
-│   ├── evaluate.py                 # metrics + plotting helpers
-│   ├── eda.py                      # EDA summaries and plots
-│   ├── train.py                    # end-to-end training orchestration
-│   └── utils.py                    # logging and generic utilities
-├── main.py                         # CLI entry point: train models
-├── plots.py                        # CLI entry point: generate plots
+│   ├── config.py                   # Paths, constants, SNAPSHOT_MONTHS=6
+│   ├── data.py                     # Data loading + date utilities
+│   ├── preprocess.py               # Filtering + target engineering
+│   ├── features.py                 # 6-month snapshot feature engineering
+│   ├── split.py                    # Temporal train/test split
+│   ├── models.py                   # Model + preprocessing pipelines
+│   ├── evaluate.py                 # Metrics + evaluation utilities
+│   ├── train.py                    # End-to-end training + drift diagnostics
+│   └── utils.py                    # Logging + generic utilities
+├── main.py                         # CLI entry point
 ├── requirements.txt
 └── README.md
 ```
 
+## 9. Academic Rigor & Limitations
 
-## 8. Limitations and Future Work
+### ✅ Strengths
+- **No target leakage**: Strict 6-month snapshot constraint
+- **Temporal validation**: Realistic train/test split
+- **Drift diagnostics**: PSI and residual shift monitoring
+- **Reproducible**: Fixed random seeds, automated pipeline
 
-- **Censoring and observation window**: the proxy used for company lifetime
-  (based on funding dates) may underestimate survival for bootstrapped or
-  late-filing companies.
-- **Label noise**: the `status` field may itself be noisy or incomplete,
-  especially for still-operating but low-visibility startups.
-- **External covariates**: current features focus on company-level attributes;
-  macroeconomic conditions and market-level signals are not yet included.
+### ⚠️ Limitations
+- **Temporal shift**: Expected in survival analysis
+- **Single dataset**: No external validation yet
+- **Feature scope**: Limited to basic company attributes
+- **Survival proxy**: Uses funding dates as lifetime approximation
 
-Possible extensions include:
+### 🎯 Research Contributions
+1. **Methodology**: Demonstrates importance of strict temporal constraints
+2. **Diagnostics**: Monitoring-style drift detection for ML systems
+3. **Benchmark**: Realistic performance baseline for early-stage prediction
 
-- more refined survival modeling (e.g. Cox models, competing risks,
-  explicit censoring),
-- richer text-based features from company descriptions or websites,
-- cross-market generalization studies (e.g. training on US, testing on EU).
+## 10. Citation
 
+If you use this work in research, please cite:
 
-## 9. Citation
-
-If you build upon this work in an academic or industrial context, you can cite
-it informally as:
-
-> *VentureSurvive: Startup Survival Prediction for VC Risk Assessment*.
-> GitHub repository, 2025.
-
+```bibtex
+@software{venturesurvive2025,
+  title={VentureSurvive: Startup Survival Prediction with Strict 6-Month Snapshot},
+  author={VentureSurvive Team},
+  year={2025},
+  url={https://github.com/yourusername/venturesurvive}
+}
+```

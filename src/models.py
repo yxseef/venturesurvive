@@ -45,6 +45,7 @@ def build_preprocessor(
             ("num", numeric_transformer, numeric_features),
             ("cat", categorical_transformer, categorical_features),
         ],
+        # ✅ IMPORTANT: do NOT passthrough unknown columns (prevents accidental leakage)
         remainder="drop",
     )
 
@@ -159,10 +160,6 @@ def make_lightgbm_pipeline(
         ]
     )
 
-
-# ---------------------------------------------------------------------
-# Public exports
-# ---------------------------------------------------------------------
 
 __all__ = [
     "build_preprocessor",

@@ -1,0 +1,12 @@
+feature,psi
+age_at_first_funding_days,0.6347736269499356
+snapshot_horizon_days,0.23772948257887574
+funded_within_6m,0.0
+first_funding_missing,0.0
+is_us,0.0
+is_uk,0.0
+is_eu,0.0
+country_code_missing,0.0
+state_code_missing,0.0
+region_missing,0.0
+city_missing,0.0

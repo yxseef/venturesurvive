@@ -1,4 +1,4 @@
-"""Training and experiment orchestration for the venturesurvive project."""
+""""Training and experiment orchestration for the venturesurvive project."""
 
 from __future__ import annotations
 
@@ -52,6 +52,217 @@ def _baseline_metrics(y_true: np.ndarray, *, y_pred: np.ndarray, y_score: np.nda
         out["brier"] = float("nan")
 
     return out
+
+
+def _print_residual_shift_diagnostic(
+    train_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+    *,
+    snapshot_col: str = "snapshot_date",
+    y_col: str = "success",
+    show_last_n_years: int = 12,
+    save_csv: bool = True,
+) -> None:
+    """Print + (optionally) export a report-friendly 'residual shift' diagnostic.
+
+    What it prints:
+    - Train/test snapshot_date ranges
+    - Train/test success rates
+    - Success rate by snapshot year (train vs test), plus counts
+
+    What it saves (if save_csv=True):
+    - RESULTS_DIR/residual_shift_by_year.csv (full table across all years)
+    """
+    if snapshot_col not in train_df.columns or snapshot_col not in test_df.columns:
+        print("⚠️  Residual shift diagnostic skipped: missing snapshot_date in train/test.")
+        return
+    if y_col not in train_df.columns or y_col not in test_df.columns:
+        print("⚠️  Residual shift diagnostic skipped: missing target column in train/test.")
+        return
+
+    tr_dates = pd.to_datetime(train_df[snapshot_col], errors="coerce")
+    te_dates = pd.to_datetime(test_df[snapshot_col], errors="coerce")
+
+    tr_min = tr_dates.min()
+    tr_max = tr_dates.max()
+    te_min = te_dates.min()
+    te_max = te_dates.max()
+
+    tr_y = pd.to_numeric(train_df[y_col], errors="coerce")
+    te_y = pd.to_numeric(test_df[y_col], errors="coerce")
+
+    print("\n================= Residual shift diagnostic =================")
+    print(
+        f"Train {snapshot_col} range: "
+        f"{tr_min.date() if pd.notna(tr_min) else 'NaT'} -> {tr_max.date() if pd.notna(tr_max) else 'NaT'} "
+        f"(n={len(train_df):,})"
+    )
+    print(
+        f"Test  {snapshot_col} range: "
+        f"{te_min.date() if pd.notna(te_min) else 'NaT'} -> {te_max.date() if pd.notna(te_max) else 'NaT'} "
+        f"(n={len(test_df):,})"
+    )
+    print(
+        f"Success rate: train={float(np.nanmean(tr_y)):.3f} | test={float(np.nanmean(te_y)):.3f}"
+    )
+
+    tr_tbl = (
+        pd.DataFrame({"year": tr_dates.dt.year, "y": tr_y})
+        .dropna(subset=["year", "y"])
+        .groupby("year", as_index=False)
+        .agg(n_train=("y", "size"), rate_train=("y", "mean"))
+        .sort_values("year")
+    )
+    te_tbl = (
+        pd.DataFrame({"year": te_dates.dt.year, "y": te_y})
+        .dropna(subset=["year", "y"])
+        .groupby("year", as_index=False)
+        .agg(n_test=("y", "size"), rate_test=("y", "mean"))
+        .sort_values("year")
+    )
+
+    merged = tr_tbl.merge(te_tbl, on="year", how="outer").sort_values("year")
+    merged["delta_rate_test_minus_train"] = merged["rate_test"] - merged["rate_train"]
+
+    if save_csv:
+        RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+        out_path = RESULTS_DIR / "residual_shift_by_year.csv"
+        merged.to_csv(out_path, index=False)
+        print(f"✓ Saved residual shift table to {out_path}")
+
+    # show last N years only
+    merged_show = merged.tail(show_last_n_years).copy() if len(merged) > show_last_n_years else merged.copy()
+
+    if not merged_show.empty:
+        def fmt(x):
+            return f"{x:.3f}" if pd.notna(x) else ""
+
+        merged_show_print = merged_show.copy()
+        merged_show_print["rate_train"] = merged_show_print["rate_train"].map(fmt)
+        merged_show_print["rate_test"] = merged_show_print["rate_test"].map(fmt)
+        merged_show_print["delta_rate_test_minus_train"] = merged_show_print["delta_rate_test_minus_train"].map(fmt)
+
+        print("\nSuccess rate by snapshot year (train vs test):")
+        print(merged_show_print.to_string(index=False))
+
+    print("==============================================================\n")
+
+
+def _psi_for_numeric(train_s: pd.Series, test_s: pd.Series, n_bins: int = 10, eps: float = 1e-6) -> float:
+    """Population Stability Index (PSI) for one numeric feature.
+
+    Bins are defined by TRAIN quantiles (common in drift monitoring).
+    """
+    train_s = pd.to_numeric(train_s, errors="coerce")
+    test_s = pd.to_numeric(test_s, errors="coerce")
+    train_s = train_s.replace([np.inf, -np.inf], np.nan).dropna()
+    test_s = test_s.replace([np.inf, -np.inf], np.nan).dropna()
+
+    if train_s.empty or test_s.empty:
+        return float("nan")
+
+    # If constant / near-constant, PSI not meaningful
+    if train_s.nunique() <= 1:
+        return 0.0
+
+    qs = np.linspace(0, 1, n_bins + 1)
+    edges = np.unique(train_s.quantile(qs).values)
+
+    # Need at least 3 edges to form bins
+    if len(edges) < 3:
+        return 0.0
+
+    # Ensure edges are strictly increasing
+    edges[0] = -np.inf
+    edges[-1] = np.inf
+
+    train_bins = pd.cut(train_s, bins=edges, include_lowest=True)
+    test_bins = pd.cut(test_s, bins=edges, include_lowest=True)
+
+    train_dist = train_bins.value_counts(normalize=True).sort_index()
+    test_dist = test_bins.value_counts(normalize=True).sort_index()
+
+    # Align indices and apply epsilon smoothing
+    idx = train_dist.index.union(test_dist.index)
+    train_p = train_dist.reindex(idx, fill_value=0.0).values
+    test_p = test_dist.reindex(idx, fill_value=0.0).values
+
+    train_p = np.clip(train_p, eps, 1.0)
+    test_p = np.clip(test_p, eps, 1.0)
+
+    psi = np.sum((test_p - train_p) * np.log(test_p / train_p))
+    return float(psi)
+
+
+def _compute_numeric_psi_table(X_train: pd.DataFrame, X_test: pd.DataFrame, n_bins: int = 10) -> pd.DataFrame:
+    """Compute PSI for all numeric columns and return a sorted table."""
+    numeric_cols = X_train.select_dtypes(include=["number"]).columns.tolist()
+    rows = []
+    for c in numeric_cols:
+        psi = _psi_for_numeric(X_train[c], X_test[c], n_bins=n_bins)
+        rows.append({"feature": c, "psi": psi})
+    df_psi = pd.DataFrame(rows).sort_values("psi", ascending=False).reset_index(drop=True)
+    return df_psi
+
+
+def _try_save_diagnostic_plots(psi_table: pd.DataFrame) -> None:
+    """Optional: save 2 plots into RESULTS_DIR if matplotlib is available.
+    - residual_shift_by_year.png
+    - psi_top_numeric.png
+
+    This function NEVER breaks the pipeline (fails gracefully).
+    """
+    try:
+        import matplotlib.pyplot as plt
+    except Exception:
+        print("⚠️  matplotlib not installed; skipping diagnostic plots.")
+        return
+
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Plot 1: residual shift by year (train vs test) from saved CSV
+    try:
+        residual_path = RESULTS_DIR / "residual_shift_by_year.csv"
+        if residual_path.exists():
+            dfp = pd.read_csv(residual_path).sort_values("year")
+            dfp = dfp[dfp["year"].notna()]
+            x = dfp["year"].astype(int)
+
+            plt.figure()
+            if "rate_train" in dfp.columns:
+                plt.plot(x, dfp["rate_train"], marker="o", label="train")
+            if "rate_test" in dfp.columns:
+                plt.plot(x, dfp["rate_test"], marker="o", label="test")
+
+            plt.xlabel("snapshot year")
+            plt.ylabel("success rate")
+            plt.title("Residual label/cohort shift: success rate by year")
+            plt.legend()
+            out_path = RESULTS_DIR / "residual_shift_by_year.png"
+            plt.tight_layout()
+            plt.savefig(out_path, dpi=150)
+            plt.close()
+            print(f"✓ Saved plot to {out_path}")
+    except Exception as e:
+        print(f"⚠️  Could not save residual shift plot: {e}")
+
+    # Plot 2: top PSI numeric
+    try:
+        if psi_table is not None and not psi_table.empty:
+            top = psi_table.dropna(subset=["psi"]).head(10).copy()
+            top = top.iloc[::-1]  # nicer order for barh
+
+            plt.figure()
+            plt.barh(top["feature"], top["psi"])
+            plt.xlabel("PSI")
+            plt.title("Top numeric covariate shift (PSI)")
+            out_path = RESULTS_DIR / "psi_top_numeric.png"
+            plt.tight_layout()
+            plt.savefig(out_path, dpi=150)
+            plt.close()
+            print(f"✓ Saved plot to {out_path}")
+    except Exception as e:
+        print(f"⚠️  Could not save PSI plot: {e}")
 
 
 def run_modeling_pipeline(
@@ -128,7 +339,23 @@ def run_modeling_pipeline(
         "train_df is not sorted by snapshot_date; TimeSeriesSplit would be invalid."
     )
 
-    # Drop date columns from modeling matrices
+    # ------------------------------------------------------------------
+    # ✅ Residual shift diagnostic (label/cohort shift)
+    # Runs BEFORE dropping snapshot_date (used for splitting only).
+    # ------------------------------------------------------------------
+    _print_residual_shift_diagnostic(
+        train_df,
+        test_df,
+        snapshot_col="snapshot_date",
+        y_col="success",
+        show_last_n_years=12,
+        save_csv=True,
+    )
+
+    # ------------------------------------------------------------------
+    # ✅ CRITICAL: remove date columns BEFORE building X_train/X_test
+    # snapshot_date is used ONLY for splitting, never as a feature.
+    # ------------------------------------------------------------------
     date_cols = ["founded_at", "first_funding_at", "snapshot_date"]
     drop_cols = [c for c in date_cols if c in train_df.columns]
     if drop_cols:
@@ -139,6 +366,28 @@ def run_modeling_pipeline(
     y_test = test_df["success"].astype(int).to_numpy()
     X_train = train_df.drop(columns=["success"])
     X_test = test_df.drop(columns=["success"])
+
+    # ✅ Anti-leak checks (must never fail)
+    assert "snapshot_date" not in X_train.columns, "LEAK: snapshot_date is still in X_train!"
+    assert "snapshot_date" not in X_test.columns, "LEAK: snapshot_date is still in X_test!"
+    assert "success" not in X_train.columns and "success" not in X_test.columns, "Target leaked into X!"
+
+    # ------------------------------------------------------------------
+    # ✅ Covariate shift diagnostic (PSI on numeric features)
+    # ------------------------------------------------------------------
+    psi_table = _compute_numeric_psi_table(X_train, X_test, n_bins=10)
+    psi_path = RESULTS_DIR / "covariate_shift_psi_numeric.csv"
+    psi_table.to_csv(psi_path, index=False)
+    print(f"✓ Saved covariate shift PSI table to {psi_path}")
+
+    # Print top drifted numeric features (report-friendly)
+    top_k = 10
+    if not psi_table.empty:
+        print("\nTop numeric covariate shift (PSI):")
+        print(psi_table.head(top_k).to_string(index=False))
+
+    # Optional: save plots (never breaks)
+    _try_save_diagnostic_plots(psi_table)
 
     # ------------------------------------------------------------------
     # Quick class balance checks (report-friendly)
@@ -166,9 +415,7 @@ def run_modeling_pipeline(
     numeric_cols = X_train.select_dtypes(include=["number"]).columns.tolist()
     categorical_cols = X_train.select_dtypes(include=["object", "category"]).columns.tolist()
 
-    print(
-        f"✓ Temporal split (snapshot-aligned): {X_train.shape[0]:,} train, {X_test.shape[0]:,} test"
-    )
+    print(f"✓ Temporal split (snapshot-aligned): {X_train.shape[0]:,} train, {X_test.shape[0]:,} test")
     print(f"✓ Modeling columns: {len(numeric_cols)} numeric, {len(categorical_cols)} categorical")
 
     results: Dict[str, Dict[str, float]] = {}
