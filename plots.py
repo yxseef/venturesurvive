@@ -313,7 +313,19 @@ def main():
         print("\n❌ No models found. Please run main.py first to train models.")
         return
 
-    X_test, y_test = prepare_data(cutoff_date="2013-01-01")
+    # Use the same cutoff logic as main.py
+    from src.config import PROCESSED_DATA_PATH
+    import pandas as pd
+    
+    # Auto-cutoff based on snapshot_date quantile (same as main.py)
+    df_cutoff = pd.read_csv(PROCESSED_DATA_PATH)
+    s = pd.to_datetime(df_cutoff["snapshot_date"], errors="coerce").dropna().sort_values()
+    cutoff_ts = pd.to_datetime(s.quantile(0.80)).normalize()
+    cutoff_date = cutoff_ts.date().isoformat()
+    
+    print(f"  ✓ Using auto cutoff_date (80/20): {cutoff_date}")
+    
+    X_test, y_test = prepare_data(cutoff_date=cutoff_date)
 
     plot_roc_comparison(models_dict, X_test, y_test)
     plot_pr_comparison(models_dict, X_test, y_test)
@@ -329,4 +341,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-au
