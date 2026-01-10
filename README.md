@@ -30,7 +30,81 @@ VentureSurvive implements **rigorous academic temporal rigor**:
 - **Leakage Guards**: Automated validation prevents future information usage
 
 
-## 2. Data & Preprocessing
+## 2. Setup & Run Instructions
+
+### 🚀 Quick Start
+
+Follow these steps to set up the environment and run the complete pipeline:
+
+```bash
+# 1. Create virtual environment
+python3 -m venv .venv
+
+# 2. Activate virtual environment
+source .venv/bin/activate
+
+# 3. Install dependencies
+pip install -r requirements.txt
+
+# 4. Run the complete ML pipeline
+python main.py
+
+# 5. Generate all visualizations
+python plots.py
+```
+
+### 🔧 Prerequisites
+
+- **Python 3.8+** (tested with Python 3.12)
+- **Git** (for cloning the repository)
+- **~2GB disk space** (for data + models + results)
+
+### 📋 Environment Details
+
+The project uses a **minimal, production-ready dependency stack**:
+- Core ML: `scikit-learn`, `lightgbm`, `numpy`, `pandas`
+- Visualization: `matplotlib`, `seaborn`
+- Utilities: `scipy`, `joblib`
+
+All dependencies are pinned to specific versions in `requirements.txt` for reproducibility.
+
+### ⚡ What Happens When You Run
+
+1. **Data Preprocessing** (`main.py`):
+   - Loads raw startup data
+   - Applies strict 6-month snapshot filtering
+   - Removes leakage-prone features
+   - Saves cleaned dataset to `data/processed/`
+
+2. **Model Training** (`main.py`):
+   - Temporal train/test split (80/20 by snapshot_date)
+   - Trains 4 models: Logistic Regression, Random Forest (baseline + tuned), LightGBM
+   - Saves trained models to `models/`
+   - Generates comprehensive evaluation metrics
+
+3. **Visualization Generation** (`plots.py`):
+   - Creates ROC/PR curves, confusion matrices
+   - Generates feature importance plots
+   - Produces drift diagnostics (PSI, residual shift)
+   - Saves all plots to `results/`
+
+### 📊 Expected Output
+
+After successful execution, you'll find:
+- **Models**: `models/*.joblib` (4 trained models)
+- **Metrics**: `results/metrics_summary.csv` (performance table)
+- **Plots**: `results/*.png` (10+ visualizations)
+- **Diagnostics**: `results/*_by_year.csv` (drift analysis)
+
+### 🐛 Common Issues
+
+**Memory Error**: Reduce dataset size by modifying `REBUILD_CLEAN_DATASET = False` in `main.py`
+
+**LightGBM Warnings**: Expected feature name warnings - these don't affect functionality
+
+**Empty Test Set**: Auto-cutoff prevents this - if it occurs, check data quality in `data/processed/`
+
+## 3. Data & Preprocessing
 
 ### 📊 Dataset Structure
 ```
@@ -57,7 +131,7 @@ data/
 **Result**: Dataset size varies with filtering (see `results/metrics_summary.csv` for latest run statistics)
 
 
-## 3. Target Definition
+## 4. Target Definition
 
 ### 🎯 Binary Success Target
 The `success` variable captures **long-term survival or clear exits**:
@@ -79,7 +153,7 @@ success = 0 otherwise
 This **temporal shift** is expected and properly quantified in our diagnostics (see `results/residual_shift_by_year.csv`).
 
 
-## 4. Feature Engineering (Snapshot-Safe)
+## 5. Feature Engineering (Snapshot-Safe)
 
 ### 🚫 Forbidden Features (Prevent Leakage)
 ```
@@ -151,7 +225,7 @@ assert not any(col in X_train.columns for col in forbidden)
    - Relationships between `success` and funding/geographic variables.
 
 
-## 5. Modeling & Validation
+## 6. Modeling & Validation
 
 ### 🤖 Model Pipeline
 1. **Preprocessing**: Median imputation + scaling (numeric), most-frequent + one-hot (categorical)
@@ -181,15 +255,17 @@ See `results/metrics_summary.csv` for the latest performance metrics. Example fr
 | Random Forest (tuned)    | 0.67    | 0.65   | 0.60     | 0.23        |
 | LightGBM                 | 0.66    | 0.65   | 0.59     | 0.29        |
 
-**Note**: Realistic performance due to strict temporal validation and no leakage.
+**Note**: See `results/metrics_summary.csv` for exact latest run statistics.
 
 ### 📈 Visual Results
 Key visualizations are generated automatically:
 - `results/roc_comparison.png` - ROC curves comparison
-- `results/residual_shift_by_year.png` - Success rate by snapshot year
+- `results/pr_comparison.png` - Precision-Recall curves  
+- `results/confusion_matrices.png` - Confusion matrices for all models
 - `results/feature_importance.png` - Feature importance ranking
+- `results/residual_shift_by_year.png` - Success rate by snapshot year
 
-## 6. Drift Diagnostics & Monitoring
+## 7. Drift Diagnostics & Monitoring
 
 ### 📈 Population Stability Index (PSI)
 Automated drift detection on numeric features (see `results/covariate_shift_psi_numeric.csv`):
@@ -214,7 +290,7 @@ assert "snapshot_date" not in X_train.columns  # No leakage
 assert train_df["snapshot_date"].is_monotonic_increasing  # CV validity
 ```
 
-## 7. Usage & Reproducibility
+## 8. Usage & Reproducibility
 
 ### 🚀 Quick Start
 ```bash
@@ -228,8 +304,8 @@ pip install -r requirements.txt
 # Run full pipeline
 python main.py
 
-# Quick demo with sample data
-python main.py --quick-start --demo-data
+# Generate visualizations
+python plots.py
 ```
 
 ### 📋 What the Pipeline Does
@@ -252,11 +328,13 @@ results/                         # Diagnostics & metrics
 ├── metrics_summary.csv
 ├── residual_shift_by_year.csv
 ├── covariate_shift_psi_numeric.csv
-├── roc_curves_comparison.png
-├── temporal_shift_analysis.png
-├── feature_importance_ranking.png
-├── calibration_plots.png
-└── psi_drift_monitoring.png
+├── roc_comparison.png
+├── pr_comparison.png
+├── confusion_matrices.png
+├── metrics_comparison.png
+├── feature_importance.png
+├── psi_top_numeric.png
+└── cohort_shift_by_year.png
 ```
 
 ### 🔧 Advanced Usage
@@ -271,7 +349,7 @@ metrics = evaluate_classification(model, X_test, y_test)
 ```
 
 
-## 8. Project Structure
+## 9. Project Structure
 
 ```
 venturesurvive/
@@ -297,7 +375,7 @@ venturesurvive/
 └── README.md
 ```
 
-## 9. Academic Rigor & Limitations
+## 10. Academic Rigor & Limitations
 
 ### ✅ Strengths
 - **No target leakage**: Strict 6-month snapshot constraint
@@ -316,7 +394,7 @@ venturesurvive/
 2. **Diagnostics**: Monitoring-style drift detection for ML systems
 3. **Benchmark**: Realistic performance baseline for early-stage prediction
 
-## 10. Citation
+## 11. Citation
 
 If you use this work in research, please cite:
 
