@@ -52,10 +52,16 @@ python main.py
 # 5. Generate all visualizations
 python plots.py
 ```
+### 📦 Model Artifacts
+
+Trained models are saved locally to the `models/` directory when running the pipeline.
+
+> **Note**: Model artifacts (`*.joblib`) are intentionally **not tracked by git** to keep the repository lightweight and compatible with GitHub size limits.  
+> All models can be fully regenerated end-to-end by running `python main.py`.
 
 ### 🔧 Prerequisites
 
-- **Python 3.8+** (tested with Python 3.12)
+- **Python 3.10+** (tested with Python 3.12)
 - **Git** (for cloning the repository)
 - **~2GB disk space** (for data + models + results)
 
@@ -91,7 +97,7 @@ All dependencies are pinned to specific versions in `requirements.txt` for repro
 ### 📊 Expected Output
 
 After successful execution, you'll find:
-- **Models**: `models/*.joblib` (4 trained models)
+- **Models(generated locally)**: `models/*.joblib` (4 trained models, not tracked by git)
 - **Metrics**: `results/metrics_summary.csv` (performance table)
 - **Plots**: `results/*.png` (10+ visualizations)
 - **Diagnostics**: `results/*_by_year.csv` (drift analysis)
@@ -318,7 +324,7 @@ python plots.py
 
 ### 📊 Outputs Generated
 ```
-models/                          # Trained model pipelines
+models/                          # Trained model pipelines (generated locally, not versioned)
 ├── log_reg_baseline.joblib
 ├── random_forest_baseline.joblib
 ├── random_forest_tuned.joblib
