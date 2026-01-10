@@ -5,11 +5,9 @@ from __future__ import annotations
 import logging
 
 
-def setup_logging(level: int = logging.INFO) -> None:
-    """Configure basic logging for the project."""
+def setup_logging():
     logging.basicConfig(
-        level=level,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        force=True,  # ensure reconfiguration in notebooks / repeated runs
+        level=logging.INFO,
+        format="%(levelname)s: %(message)s"
     )
-__all__ = ["setup_logging"]
+

@@ -1,6 +1,10 @@
-"""Model and pipeline utilities for the venturesurvive project."""
+"""
+Model and pipeline utilities for the venturesurvive project.
 
-from __future__ import annotations
+This file contains:
+- a simple preprocessing pipeline (numeric + categorical)
+- a few model pipelines (LogReg, RandomForest, LightGBM if installed)
+"""
 
 from typing import List
 
@@ -11,56 +15,52 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
+# LightGBM is optional (project should still run without it)
 try:
     from lightgbm import LGBMClassifier
 except Exception:
     LGBMClassifier = None
 
 
-# ---------------------------------------------------------------------
-# Preprocessing
-# ---------------------------------------------------------------------
+def build_preprocessor(numeric_features: List[str], categorical_features: List[str]) -> ColumnTransformer:
+    """
+    Preprocessing for the models:
+    - numeric: median imputation + standard scaling
+    - categorical: most_frequent imputation + one-hot encoding
 
-def build_preprocessor(
-    numeric_features: List[str],
-    categorical_features: List[str],
-) -> ColumnTransformer:
-    """Create a ColumnTransformer for preprocessing."""
-    numeric_transformer = Pipeline(
+    Note: remainder="drop" to avoid accidentally passing columns we didn't plan to use.
+    """
+    numeric_pipe = Pipeline(
         steps=[
             ("imputer", SimpleImputer(strategy="median")),
             ("scaler", StandardScaler()),
         ]
     )
 
-    categorical_transformer = Pipeline(
+    cat_pipe = Pipeline(
         steps=[
             ("imputer", SimpleImputer(strategy="most_frequent")),
-            ("onehot", OneHotEncoder(handle_unknown="ignore", sparse_output=True)),
+            ("onehot", OneHotEncoder(handle_unknown="ignore")),
         ]
     )
 
-    return ColumnTransformer(
+    preprocessor = ColumnTransformer(
         transformers=[
-            ("num", numeric_transformer, numeric_features),
-            ("cat", categorical_transformer, categorical_features),
+            ("num", numeric_pipe, numeric_features),
+            ("cat", cat_pipe, categorical_features),
         ],
-        # ✅ IMPORTANT: do NOT passthrough unknown columns (prevents accidental leakage)
         remainder="drop",
     )
 
+    return preprocessor
 
-# ---------------------------------------------------------------------
-# Models
-# ---------------------------------------------------------------------
 
 def make_logistic_regression_pipeline(
     numeric_features: List[str],
     categorical_features: List[str],
-    *,
     random_state: int = 42,
 ) -> Pipeline:
-    """Logistic Regression pipeline."""
+    """Logistic Regression + preprocessing."""
     preprocessor = build_preprocessor(numeric_features, categorical_features)
 
     clf = LogisticRegression(
@@ -80,15 +80,13 @@ def make_logistic_regression_pipeline(
 def make_random_forest_baseline_pipeline(
     numeric_features: List[str],
     categorical_features: List[str],
-    *,
     random_state: int = 42,
 ) -> Pipeline:
-    """Baseline Random Forest pipeline."""
+    """Baseline Random Forest + preprocessing."""
     preprocessor = build_preprocessor(numeric_features, categorical_features)
 
     clf = RandomForestClassifier(
         n_estimators=300,
-        max_depth=None,
         random_state=random_state,
         n_jobs=-1,
     )
@@ -104,16 +102,18 @@ def make_random_forest_baseline_pipeline(
 def make_random_forest_tuned_pipeline(
     numeric_features: List[str],
     categorical_features: List[str],
-    *,
     random_state: int = 42,
 ) -> Pipeline:
-    """Random Forest pipeline with tuned hyperparameters."""
+    """
+    Random Forest with fixed "best" hyperparameters (example).
+    If you don’t use this pipeline directly in train.py, you can remove it.
+    """
     preprocessor = build_preprocessor(numeric_features, categorical_features)
 
     clf = RandomForestClassifier(
         n_estimators=225,
         max_depth=9,
-        max_features=0.44555916400773216,
+        max_features=0.45,          # rounded (easier to explain than a long float)
         min_samples_split=30,
         min_samples_leaf=4,
         class_weight=None,
@@ -132,20 +132,17 @@ def make_random_forest_tuned_pipeline(
 def make_lightgbm_pipeline(
     numeric_features: List[str],
     categorical_features: List[str],
-    *,
     random_state: int = 42,
 ) -> Pipeline:
-    """LightGBM pipeline."""
+    """LightGBM + preprocessing (only if lightgbm is installed)."""
     if LGBMClassifier is None:
-        raise RuntimeError("lightgbm is not installed; cannot build LightGBM pipeline.")
+        raise RuntimeError("lightgbm is not installed")
 
     preprocessor = build_preprocessor(numeric_features, categorical_features)
 
     clf = LGBMClassifier(
         n_estimators=500,
         learning_rate=0.05,
-        max_depth=-1,
-        num_leaves=31,
         subsample=0.8,
         colsample_bytree=0.8,
         random_state=random_state,
@@ -159,12 +156,3 @@ def make_lightgbm_pipeline(
             ("classifier", clf),
         ]
     )
-
-
-__all__ = [
-    "build_preprocessor",
-    "make_logistic_regression_pipeline",
-    "make_random_forest_baseline_pipeline",
-    "make_random_forest_tuned_pipeline",
-    "make_lightgbm_pipeline",
-]
